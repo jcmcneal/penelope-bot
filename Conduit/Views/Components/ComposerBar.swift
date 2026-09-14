@@ -190,7 +190,7 @@ struct ComposerBar: View {
 
     private var composerEnabled: Bool {
         if let messaging {
-            return messaging.canWrite && !messaging.isSending && !messaging.hasPending
+            return messaging.canWrite
         }
         return appState.composerIsEnabled
     }

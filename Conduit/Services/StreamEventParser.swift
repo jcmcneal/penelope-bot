@@ -73,18 +73,44 @@ enum StreamEventParser {
             )
 
         case "tool.start", "tool_call":
-            let name = payload?["name"]?.stringValue ?? ""
-            let input = payload?["args_text"]?.descriptiveStringValue
-                ?? payload?["context"]?.descriptiveStringValue
-                ?? payload?["input"]?.descriptiveStringValue
-                ?? payload?["arguments"]?.descriptiveStringValue
-                ?? payload?["args"]?.descriptiveStringValue
-            return .toolStart(sessionId: sessionId, toolName: name, toolInput: input)
+            return .toolStart(
+                sessionId: sessionId,
+                toolName: payload?["name"]?.stringValue ?? "",
+                toolInput: firstDescriptiveString(in: payload, keys: ["args_text", "context", "input", "arguments", "args"])
+            )
+
+        case "tool.delta", "tool.args", "tool.input.delta", "tool_call.delta":
+            let replace = payload?["arguments"] != nil
+                || payload?["args"] != nil
+                || payload?["input"] != nil
+            let input = firstDescriptiveString(
+                in: payload,
+                keys: ["delta", "text", "args_text", "arguments", "args", "input"]
+            ) ?? ""
+            if input.isEmpty { return nil }
+            return .toolDelta(
+                sessionId: sessionId,
+                toolName: payload?["name"]?.stringValue ?? "",
+                toolInput: input,
+                replace: replace
+            )
 
         case "tool.complete", "tool_result":
-            let name = payload?["name"]?.stringValue ?? ""
-            let output = payload?["output"]?.descriptiveStringValue ?? payload?["result"]?.descriptiveStringValue
-            return .toolComplete(sessionId: sessionId, toolName: name, toolOutput: output)
+            return .toolComplete(
+                sessionId: sessionId,
+                toolName: payload?["name"]?.stringValue ?? "",
+                toolOutput: firstDescriptiveString(in: payload, keys: ["output", "result"])
+            )
+
+        case "tool.error", "tool.failed":
+            let message = payload?["message"]?.stringValue
+                ?? firstDescriptiveString(in: payload, keys: ["error", "output"])
+                ?? "Tool failed."
+            return .toolFailed(
+                sessionId: sessionId,
+                toolName: payload?["name"]?.stringValue ?? "",
+                message: message
+            )
 
         case "review.summary":
             guard let payload, let review = MessageNormalizer.reviewActivity(from: payload, eventSessionId: sessionId) else { return nil }
@@ -130,6 +156,19 @@ enum StreamEventParser {
         default:
             return .unparsed(payload: obj.mapValues { $0.anyValue })
         }
+    }
+
+    private static func firstDescriptiveString(
+        in payload: [String: AnyCodable]?,
+        keys: [String]
+    ) -> String? {
+        guard let payload else { return nil }
+        for key in keys {
+            if let value = payload[key]?.descriptiveStringValue, !value.isEmpty {
+                return value
+            }
+        }
+        return nil
     }
 
     private static func delegateAgentActivity(from payload: [String: AnyCodable], eventType: String) -> DelegateAgentActivity {

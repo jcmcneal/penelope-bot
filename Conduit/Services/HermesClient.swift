@@ -174,7 +174,10 @@ enum StreamEvent {
     case sessionInfo(sessionId: String, snapshot: SessionRuntimeSnapshot)
     case sessionTitle(runtimeSessionId: String, storedSessionId: String, title: String)
     case toolStart(sessionId: String, toolName: String, toolInput: String?)
+    /// Incremental tool arguments while a call is still filling in.
+    case toolDelta(sessionId: String, toolName: String, toolInput: String, replace: Bool)
     case toolComplete(sessionId: String, toolName: String, toolOutput: String?)
+    case toolFailed(sessionId: String, toolName: String, message: String)
     case reviewSummary(sessionId: String, activity: ReviewActivity)
     /// The complete normalized clarification — batch structure intact. The
     /// parser must not flatten `questions[]` back into scalar fields, or a
@@ -189,6 +192,26 @@ enum StreamEvent {
     case agentCount(sessionId: String, count: Int)
     case delegateAgent(sessionId: String, activity: DelegateAgentActivity)
     case unparsed(payload: [String: Any])
+
+    var sessionID: String {
+        switch self {
+        case .messageStart(let sessionId), .messageDelta(let sessionId, _),
+                .reasoningDelta(let sessionId, _),
+                .messageComplete(let sessionId, _, _, _), .messageError(let sessionId, _),
+                .messageInterrupted(let sessionId), .sessionBusy(let sessionId, _),
+                .sessionInfo(let sessionId, _), .sessionTitle(let sessionId, _, _),
+                .toolStart(let sessionId, _, _), .toolDelta(let sessionId, _, _, _),
+                .toolComplete(let sessionId, _, _), .toolFailed(let sessionId, _, _),
+                .reviewSummary(let sessionId, _), .clarify(let sessionId, _),
+                .clarifyExpire(let sessionId, _), .approval(let sessionId, _),
+                .contextUpdate(let sessionId, _, _, _), .cwdUpdate(let sessionId, _),
+                .modelUpdate(let sessionId, _, _), .agentCount(let sessionId, _),
+                .delegateAgent(let sessionId, _):
+            return sessionId
+        case .unparsed:
+            return ""
+        }
+    }
 }
 
 /// Runtime fields returned by `session.resume` and `session.info`.
@@ -512,7 +535,7 @@ final class HermesClient: ObservableObject {
     private var openTimeoutTask: Task<Void, Never>?
 
     let connection: HermesConnection
-    let profile: String?
+    private(set) var profile: String?
     let cloudflareAccess: CloudflareAccessCredentials?
 
     // Callback for stream events (set by AppState)
@@ -547,6 +570,18 @@ final class HermesClient: ObservableObject {
         self.cloudflareAccess = cloudflareAccess
         self.transportFactory = transportFactory
     }
+
+    /// Reuse the authenticated socket when switching Hermes profiles. Tickets
+    /// are connection-scoped, not profile-scoped; RPCs already pass `profile`.
+    func retargetProfile(_ profile: String) {
+        self.profile = profile
+    }
+
+#if DEBUG
+    func setConnectedForTesting(_ connected: Bool) {
+        isConnected = connected
+    }
+#endif
 
     // MARK: - Connection
 

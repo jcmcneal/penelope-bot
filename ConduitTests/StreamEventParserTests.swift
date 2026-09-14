@@ -269,6 +269,40 @@ final class StreamEventParserTests: XCTestCase {
         XCTAssertEqual(toolOutput, "found")
     }
 
+    func testToolDeltaAppendsArguments() {
+        let event = parse(#"""
+        {"type": "tool.delta", "session_id": "s1", "payload": {"name": "web_search", "delta": "query=he"}}
+        """#)
+        guard case .toolDelta(_, let name, let input, let replace) = event else {
+            return XCTFail("Expected toolDelta, got \(String(describing: event))")
+        }
+        XCTAssertEqual(name, "web_search")
+        XCTAssertEqual(input, "query=he")
+        XCTAssertFalse(replace)
+    }
+
+    func testToolDeltaWithFullArgumentsReplaces() {
+        let event = parse(#"""
+        {"type": "tool.args", "session_id": "s1", "payload": {"name": "terminal", "arguments": {"command": "pwd"}}}
+        """#)
+        guard case .toolDelta(_, _, let input, let replace) = event else {
+            return XCTFail("Expected toolDelta")
+        }
+        XCTAssertTrue(replace)
+        XCTAssertTrue(input.contains("command"))
+    }
+
+    func testToolFailed() {
+        let event = parse(#"""
+        {"type": "tool.error", "session_id": "s1", "payload": {"name": "terminal", "message": "boom"}}
+        """#)
+        guard case .toolFailed(_, let name, let message) = event else {
+            return XCTFail("Expected toolFailed, got \(String(describing: event))")
+        }
+        XCTAssertEqual(name, "terminal")
+        XCTAssertEqual(message, "boom")
+    }
+
     // MARK: - context.update
 
     func testContextUpdate() {

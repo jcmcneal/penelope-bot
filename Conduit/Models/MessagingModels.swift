@@ -125,6 +125,34 @@ struct MessagingRun: Codable, Identifiable, Equatable {
     let profile: String
     let status: String
     let detail: String
+    let sessionID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, profile, status, detail
+        case sessionID = "session_id"
+    }
+
+    init(id: String, profile: String, status: String, detail: String, sessionID: String? = nil) {
+        self.id = id
+        self.profile = profile
+        self.status = status
+        self.detail = detail
+        self.sessionID = sessionID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        profile = try container.decode(String.self, forKey: .profile)
+        status = try container.decode(String.self, forKey: .status)
+        detail = try container.decodeIfPresent(String.self, forKey: .detail) ?? ""
+        if let sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID),
+           !sessionID.isEmpty {
+            self.sessionID = sessionID
+        } else {
+            sessionID = nil
+        }
+    }
 }
 
 /// Collapses messaging runs into one live avatar presence per profile.

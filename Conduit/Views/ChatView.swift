@@ -1749,9 +1749,9 @@ private struct SettledToolCardContent: View, Equatable {
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 8) {
-                            Image(systemName: tool.status == .running ? "gear" : "checkmark.circle")
+                            Image(systemName: tool.status == .running ? "gear" : (tool.status == .failed ? "xmark.circle" : "checkmark.circle"))
                                 .font(.system(size: 13))
-                                .foregroundStyle(tool.status == .running ? .orange : .green)
+                                .foregroundStyle(tool.status == .running ? .orange : (tool.status == .failed ? .red : .green))
                                 .rotationEffect(.degrees(tool.status == .running ? 360 : 0))
                                 .animation(tool.status == .running ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: tool.status)
 
@@ -1846,14 +1846,17 @@ private struct SettledToolCardContent: View, Equatable {
 
 struct ToolCard: View {
     let message: ChatMessage
+    /// Messaging live turns always show tool progress so args can fill in-place.
+    var alwaysVisible: Bool = false
+    var expandByDefault: Bool? = nil
     @EnvironmentObject var appState: AppState
     @Environment(\.sizeCategory) private var sizeCategory
 
     var body: some View {
-        if appState.displayPreferences.showToolProgress, message.tool != nil {
+        if alwaysVisible || appState.displayPreferences.showToolProgress, message.tool != nil {
             SettledToolCardContent(
                 message: message,
-                expandToolsByDefault: appState.displayPreferences.expandToolsByDefault,
+                expandToolsByDefault: expandByDefault ?? appState.displayPreferences.expandToolsByDefault,
                 sizeCategory: sizeCategory
             )
             .equatable()
@@ -2455,7 +2458,18 @@ struct ApprovalCard: View {
 struct StreamingBubble: View {
     let text: String
     let active: Bool
+    var profileID: String? = nil
+    var displayName: String? = nil
+    var avatarURL: URL? = nil
     @EnvironmentObject var appState: AppState
+
+    private var resolvedProfileID: String {
+        profileID ?? appState.activeProfile
+    }
+
+    private var resolvedDisplayName: String {
+        displayName ?? appState.profileDisplayName(resolvedProfileID)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -2465,13 +2479,13 @@ struct StreamingBubble: View {
             HStack(spacing: 8) {
                 ConduitAgentMark(
                     isActive: true,
-                    avatarURL: appState.profileAvatarURL(for: appState.activeProfile),
-                    displayName: appState.profileDisplayName(appState.activeProfile),
-                    profileID: appState.activeProfile,
-                    state: appState.avatarState(for: appState.activeProfile)
+                    avatarURL: avatarURL ?? appState.profileAvatarURL(for: resolvedProfileID),
+                    displayName: resolvedDisplayName,
+                    profileID: resolvedProfileID,
+                    state: appState.avatarState(for: resolvedProfileID)
                 )
 
-                Text(appState.profileDisplayName(appState.activeProfile))
+                Text(resolvedDisplayName)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
@@ -2490,12 +2504,13 @@ struct StreamingBubble: View {
                 text: text,
                 active: active,
                 gatewayMediaDataURL: { path in
-                    await appState.gatewayMediaDataURL(for: path, profile: appState.activeProfile)
+                    await appState.gatewayMediaDataURL(for: path, profile: resolvedProfileID)
                 }
             )
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier(profileID == nil ? "chat.streaming-bubble" : "messaging.streaming-bubble")
     }
 }
 

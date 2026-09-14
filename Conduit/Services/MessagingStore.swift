@@ -12,6 +12,7 @@ final class MessagingStore: ObservableObject {
     @Published private(set) var cardDismissed = false
     @Published private(set) var pinnedBotIDs: [String] = []
     @Published private(set) var cachedDisplayProfiles: [MessagingProfile] = []
+    @Published private(set) var liveTurns: [String: MessagingLiveTurn] = [:]
     private(set) var service: MessagingService?
     private(set) var generation = UUID()
     let historyCache = MessagingHistoryCache()
@@ -142,6 +143,7 @@ final class MessagingStore: ObservableObject {
         dismissalScope = scope
         verifiedIdentityScope = nil
         service = requester.map(MessagingService.init)
+        liveTurns = [:]
         capability = nil
         conversations = []
         hasLoadedConversations = false
@@ -427,5 +429,89 @@ final class MessagingStore: ObservableObject {
         guard epoch == generation else { throw MessagingError.staleContext }
         await refreshConversations(force: true)
         return result
+    }
+
+    func liveTurn(for destination: MessagingDestination) -> MessagingLiveTurn? {
+        liveTurns[destination.id]
+    }
+
+    func startLiveTurn(for destination: MessagingDestination, profileID: String?) {
+        liveTurns[destination.id] = MessagingLiveTurn(
+            destinationID: destination.id,
+            profileID: profileID
+        )
+    }
+
+    func syncLiveTurn(for destination: MessagingDestination, history: MessagingHistory?) {
+        let activeRuns = history?.runs.filter { ["queued", "running"].contains($0.status.lowercased()) } ?? []
+        guard var turn = liveTurns[destination.id] else {
+            let bindable = activeRuns.filter { $0.sessionID != nil }
+            guard !bindable.isEmpty else { return }
+            var turn = MessagingLiveTurn(
+                destinationID: destination.id,
+                profileID: bindable.first?.profile ?? destination.profileID
+            )
+            for run in bindable {
+                if let sessionID = run.sessionID { turn.bindSession(sessionID) }
+                turn.bindProfile(run.profile)
+            }
+            liveTurns[destination.id] = turn
+            return
+        }
+        for run in activeRuns {
+            if let sessionID = run.sessionID { turn.bindSession(sessionID) }
+            turn.bindProfile(run.profile)
+        }
+        if let history {
+            turn.absorbHistory(history.messages)
+        }
+        if shouldDrop(turn, activeRuns: activeRuns) {
+            liveTurns[destination.id] = nil
+            return
+        }
+        liveTurns[destination.id] = turn
+    }
+
+    private func shouldDrop(_ turn: MessagingLiveTurn, activeRuns: [MessagingRun]) -> Bool {
+        if turn.phase.isActive { return false }
+        if turn.tools.contains(where: { $0.status == .running }) { return false }
+        return activeRuns.isEmpty && (turn.settledTextInHistory || turn.text.isEmpty)
+    }
+
+    func clearLiveTurn(for destination: MessagingDestination) {
+        liveTurns[destination.id] = nil
+    }
+}
+
+extension MessagingStore: MessagingStreamRouting {
+    func handleUnboundStreamEvent(_ event: StreamEvent) {
+        guard !liveTurns.isEmpty else { return }
+        if case .unparsed = event { return }
+        let incoming = MessagingLiveTurn.sessionIDs(for: event)
+        if !incoming.isEmpty,
+           let key = liveTurns.first(where: { !$0.value.sessionIDs.isDisjoint(with: incoming) })?.key {
+            apply(event, to: key)
+            return
+        }
+        // History and the wire may name the same turn with different opaque
+        // ids. Alias onto the unique in-flight overlay; never guess among
+        // two conversations or profiles.
+        let aliasable = liveTurns.filter { $0.value.canAliasLiveSession }
+        guard aliasable.count == 1, let key = aliasable.keys.first else { return }
+        apply(event, to: key)
+    }
+
+    func handleStreamDisconnected() {
+        for key in liveTurns.keys {
+            guard var turn = liveTurns[key] else { continue }
+            turn.markDropped()
+            liveTurns[key] = turn
+        }
+    }
+
+    private func apply(_ event: StreamEvent, to key: String) {
+        guard var turn = liveTurns[key] else { return }
+        guard turn.apply(event) else { return }
+        liveTurns[key] = turn
     }
 }
