@@ -103,7 +103,7 @@ final class HermesClientTests: XCTestCase {
         transport.nextSocket = { socketA }
         let client = makeClient(transport: transport)
         var eventCount = 0
-        client.onEvent = { _ in eventCount += 1 }
+        client.onEvent = { _, _ in eventCount += 1 }
 
         let connectA = Task { try? await client.connect() }
         transport.open(socketA)

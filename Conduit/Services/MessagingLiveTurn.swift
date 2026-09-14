@@ -22,6 +22,8 @@ struct MessagingLiveTurn: Equatable {
 
     var destinationID: String
     var profileID: String?
+    var conversationID: String?
+    var runID: String?
     var sessionIDs: Set<String> = []
     var text = ""
     var reasoning = ""
@@ -31,11 +33,6 @@ struct MessagingLiveTurn: Equatable {
     /// True once a durable assistant message covers `text`, so the streaming
     /// bubble can hide without dropping live tool cards.
     var settledTextInHistory = false
-
-    /// Live WS `session_id` and history `runs[].session_id` are both opaque
-    /// aliases of the same in-flight turn. Either may arrive first; neither
-    /// shape is authoritative until the backend reconciles them.
-    var canAliasLiveSession: Bool { phase.isActive }
 
     var showsStreamingText: Bool {
         !settledTextInHistory && (!text.isEmpty || phase == .streaming || phase == .starting)
@@ -59,6 +56,12 @@ struct MessagingLiveTurn: Equatable {
     mutating func bindProfile(_ profileID: String?) {
         guard let profileID, !profileID.isEmpty else { return }
         if self.profileID == nil { self.profileID = profileID }
+    }
+
+    mutating func bindJoin(_ join: StreamJoinKey) {
+        if conversationID == nil { conversationID = join.conversationID }
+        if runID == nil { runID = join.runID }
+        bindProfile(join.profileID)
     }
 
     /// Returns false when the event cannot belong to this turn: an inactive
@@ -126,7 +129,7 @@ struct MessagingLiveTurn: Equatable {
             phase = .usingTool
         case .sessionInfo, .sessionTitle, .reviewSummary, .clarify, .clarifyExpire,
                 .approval, .contextUpdate, .cwdUpdate, .modelUpdate, .agentCount,
-                .delegateAgent, .unparsed:
+                .delegateAgent, .messagingRunStart, .unparsed:
             break
         }
         return true
@@ -212,6 +215,6 @@ struct MessagingLiveTurn: Equatable {
 
 @MainActor
 protocol MessagingStreamRouting: AnyObject {
-    func handleUnboundStreamEvent(_ event: StreamEvent)
+    func handleUnboundStreamEvent(_ event: StreamEvent, join: StreamJoinKey)
     func handleStreamDisconnected()
 }

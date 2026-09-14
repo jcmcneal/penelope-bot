@@ -438,7 +438,8 @@ final class MessagingStore: ObservableObject {
     func startLiveTurn(for destination: MessagingDestination, profileID: String?) {
         liveTurns[destination.id] = MessagingLiveTurn(
             destinationID: destination.id,
-            profileID: profileID
+            profileID: profileID,
+            conversationID: destination.conversationID
         )
     }
 
@@ -449,7 +450,8 @@ final class MessagingStore: ObservableObject {
             guard !bindable.isEmpty else { return }
             var turn = MessagingLiveTurn(
                 destinationID: destination.id,
-                profileID: bindable.first?.profile ?? destination.profileID
+                profileID: bindable.first?.profile ?? destination.profileID,
+                conversationID: destination.conversationID
             )
             for run in bindable {
                 if let sessionID = run.sessionID { turn.bindSession(sessionID) }
@@ -484,21 +486,11 @@ final class MessagingStore: ObservableObject {
 }
 
 extension MessagingStore: MessagingStreamRouting {
-    func handleUnboundStreamEvent(_ event: StreamEvent) {
+    func handleUnboundStreamEvent(_ event: StreamEvent, join: StreamJoinKey = .none) {
         guard !liveTurns.isEmpty else { return }
         if case .unparsed = event { return }
-        let incoming = MessagingLiveTurn.sessionIDs(for: event)
-        if !incoming.isEmpty,
-           let key = liveTurns.first(where: { !$0.value.sessionIDs.isDisjoint(with: incoming) })?.key {
-            apply(event, to: key)
-            return
-        }
-        // History and the wire may name the same turn with different opaque
-        // ids. Alias onto the unique in-flight overlay; never guess among
-        // two conversations or profiles.
-        let aliasable = liveTurns.filter { $0.value.canAliasLiveSession }
-        guard aliasable.count == 1, let key = aliasable.keys.first else { return }
-        apply(event, to: key)
+        guard let key = routeKey(for: event, join: join) else { return }
+        apply(event, join: join, to: key)
     }
 
     func handleStreamDisconnected() {
@@ -509,8 +501,38 @@ extension MessagingStore: MessagingStreamRouting {
         }
     }
 
-    private func apply(_ event: StreamEvent, to key: String) {
+    private func routeKey(for event: StreamEvent, join: StreamJoinKey) -> String? {
+        if let conversationID = join.conversationID {
+            if let key = liveTurns.first(where: { $0.value.conversationID == conversationID })?.key {
+                return key
+            }
+            let conversationKey = "conversation:\(conversationID)"
+            if liveTurns[conversationKey] != nil {
+                return conversationKey
+            }
+        }
+        if let profileID = join.profileID {
+            let dmKey = "dm:\(profileID)"
+            if liveTurns[dmKey] != nil {
+                return dmKey
+            }
+            if let key = liveTurns.first(where: {
+                $0.value.profileID == profileID && $0.value.phase.isActive
+            })?.key {
+                return key
+            }
+        }
+        let incoming = MessagingLiveTurn.sessionIDs(for: event)
+        if !incoming.isEmpty,
+           let key = liveTurns.first(where: { !$0.value.sessionIDs.isDisjoint(with: incoming) })?.key {
+            return key
+        }
+        return nil
+    }
+
+    private func apply(_ event: StreamEvent, join: StreamJoinKey, to key: String) {
         guard var turn = liveTurns[key] else { return }
+        turn.bindJoin(join)
         guard turn.apply(event) else { return }
         liveTurns[key] = turn
     }

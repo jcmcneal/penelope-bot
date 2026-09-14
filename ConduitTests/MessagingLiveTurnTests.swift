@@ -116,7 +116,10 @@ final class MessagingStreamRoutingTests: XCTestCase {
         let store = MessagingStore()
         let destination = MessagingDestination(conversationID: nil, profileID: "swe-id")
         store.startLiveTurn(for: destination, profileID: "swe-id")
-        store.handleUnboundStreamEvent(.messageDelta(sessionId: "hidden-sess", text: "Grok-fast"))
+        store.handleUnboundStreamEvent(
+            .messageDelta(sessionId: "hidden-sess", text: "Grok-fast"),
+            join: StreamJoinKey(profileID: "swe-id")
+        )
         XCTAssertEqual(store.liveTurn(for: destination)?.text, "Grok-fast")
         XCTAssertEqual(store.liveTurn(for: destination)?.sessionIDs, ["hidden-sess"])
     }
@@ -125,7 +128,10 @@ final class MessagingStreamRoutingTests: XCTestCase {
         let store = MessagingStore()
         let destination = MessagingDestination(conversationID: nil, profileID: "swe-id")
         store.startLiveTurn(for: destination, profileID: "swe-id")
-        store.handleUnboundStreamEvent(.messageDelta(sessionId: "s", text: "partial"))
+        store.handleUnboundStreamEvent(
+            .messageDelta(sessionId: "s", text: "partial"),
+            join: StreamJoinKey(profileID: "swe-id")
+        )
         store.handleStreamDisconnected()
         XCTAssertEqual(store.liveTurn(for: destination)?.phase, .interrupted)
         XCTAssertEqual(store.liveTurn(for: destination)?.text, "partial")
@@ -148,16 +154,20 @@ final class MessagingStreamRoutingTests: XCTestCase {
         )
         XCTAssertEqual(store.liveTurn(for: destination)?.sessionIDs, ["id-from-history"])
 
-        store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "Hel"))
+        let join = StreamJoinKey(conversationID: "c1", runID: "run-1", profileID: "swe-id")
+        store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "Hel"), join: join)
         store.handleUnboundStreamEvent(
-            .toolStart(sessionId: "id-from-ws", toolName: "web_search", toolInput: "q=")
+            .toolStart(sessionId: "id-from-ws", toolName: "web_search", toolInput: "q="),
+            join: join
         )
         store.handleUnboundStreamEvent(
-            .toolComplete(sessionId: "id-from-ws", toolName: "web_search", toolOutput: "sun")
+            .toolComplete(sessionId: "id-from-ws", toolName: "web_search", toolOutput: "sun"),
+            join: join
         )
-        store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "lo"))
+        store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "lo"), join: join)
         store.handleUnboundStreamEvent(
-            .messageComplete(sessionId: "id-from-ws", messageId: "m1", content: "Hello", reasoning: nil)
+            .messageComplete(sessionId: "id-from-ws", messageId: "m1", content: "Hello", reasoning: nil),
+            join: join
         )
 
         let turn = store.liveTurn(for: destination)
@@ -209,7 +219,7 @@ final class MessagingStreamRoutingTests: XCTestCase {
         XCTAssertEqual(store.liveTurn(for: designer)?.sessionIDs, ["stored-des"])
     }
 
-    func testMismatchedSidAliasesOntoTheOnlyActiveTurn() {
+    func testMismatchedSidDoesNotAliasOntoTheOnlyActiveTurn() {
         let store = MessagingStore()
         let swe = MessagingDestination(conversationID: nil, profileID: "swe-id")
         let designer = MessagingDestination(conversationID: nil, profileID: "designer-id")
@@ -224,10 +234,44 @@ final class MessagingStreamRoutingTests: XCTestCase {
 
         store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "live"))
 
-        XCTAssertEqual(store.liveTurn(for: swe)?.text, "live")
-        XCTAssertEqual(store.liveTurn(for: swe)?.sessionIDs, ["stored-swe", "id-from-ws"])
+        XCTAssertEqual(store.liveTurn(for: swe)?.text, "")
+        XCTAssertEqual(store.liveTurn(for: swe)?.sessionIDs, ["stored-swe"])
         XCTAssertEqual(store.liveTurn(for: designer)?.text, "")
         XCTAssertEqual(store.liveTurn(for: designer)?.phase, .interrupted)
+    }
+
+    func testConversationJoinKeyRoutesAmongTwoLiveTurns() {
+        let store = MessagingStore()
+        let swe = MessagingDestination(conversationID: "c-swe", profileID: nil)
+        let designer = MessagingDestination(conversationID: "c-des", profileID: nil)
+        store.startLiveTurn(for: swe, profileID: "swe-id")
+        store.startLiveTurn(for: designer, profileID: "designer-id")
+
+        store.handleUnboundStreamEvent(
+            .messageDelta(sessionId: "runtime-unknown", text: "ours"),
+            join: StreamJoinKey(conversationID: "c-swe", runID: "run-swe")
+        )
+
+        XCTAssertEqual(store.liveTurn(for: swe)?.text, "ours")
+        XCTAssertEqual(store.liveTurn(for: swe)?.sessionIDs, ["runtime-unknown"])
+        XCTAssertEqual(store.liveTurn(for: designer)?.text, "")
+        XCTAssertEqual(store.liveTurn(for: designer)?.sessionIDs ?? [], [])
+    }
+
+    func testMessagingRunStartBindsOpaqueSessionThenTokensFollow() {
+        let store = MessagingStore()
+        let destination = MessagingDestination(conversationID: nil, profileID: "swe-id")
+        store.startLiveTurn(for: destination, profileID: "swe-id")
+        let join = StreamJoinKey(conversationID: "c1", runID: "run-1", profileID: "swe-id")
+
+        store.handleUnboundStreamEvent(.messagingRunStart(sessionId: "id-from-ws"), join: join)
+        store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "Hel"))
+
+        let turn = store.liveTurn(for: destination)
+        XCTAssertEqual(turn?.text, "Hel")
+        XCTAssertEqual(turn?.sessionIDs, ["id-from-ws"])
+        XCTAssertEqual(turn?.conversationID, "c1")
+        XCTAssertEqual(turn?.runID, "run-1")
     }
 }
 

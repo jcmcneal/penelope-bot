@@ -3190,10 +3190,10 @@ final class AppState: ObservableObject {
         let client = HermesClient(connection: connection, profile: profile, cloudflareAccess: KeychainHelper.loadCloudflareAccess(for: connection.baseUrl))
         let epoch = UUID()
         activeClientEpoch = epoch
-        client.onEvent = { [weak self] event in
+        client.onEvent = { [weak self] event, join in
             Task { @MainActor in
                 guard let self, self.activeClientEpoch == epoch else { return }
-                self.handleStreamEvent(event)
+                self.handleStreamEvent(event, join: join)
             }
         }
         client.onDisconnected = { [weak self] in
@@ -12371,7 +12371,7 @@ final class AppState: ObservableObject {
         return current + next
     }
 
-    func handleStreamEvent(_ event: StreamEvent) {
+    func handleStreamEvent(_ event: StreamEvent, join: StreamJoinKey = .none) {
         if case .sessionTitle(let runtimeSessionId, let storedSessionId, let title) = event {
             let taskKey = "\(activeProfile)|\(runtimeSessionId)"
             sessionTitleRecoveryTracker.cancel(taskKey)
@@ -12391,7 +12391,7 @@ final class AppState: ObservableObject {
             return
         }
         if case .unparsed = event { return }
-        messagingStreamRouter?.handleUnboundStreamEvent(event)
+        messagingStreamRouter?.handleUnboundStreamEvent(event, join: join)
     }
 
     private func bufferIfReconciling(_ event: StreamEvent) -> Bool {
@@ -12707,6 +12707,9 @@ final class AppState: ObservableObject {
                 delegateAgents.append(activity)
             }
             activeAgents = delegateAgents.filter { $0.status.isActive }.count
+
+        case .messagingRunStart:
+            break
 
         case .unparsed:
             break
