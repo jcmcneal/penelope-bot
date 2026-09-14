@@ -40,11 +40,28 @@ final class MessagingLiveTurnTests: XCTestCase {
         XCTAssertEqual(turn.phase, .usingTool)
     }
 
-    func testForeignSessionIsIgnoredOnceBound() {
+    func testActiveTurnAliasesASecondOpaqueSessionId() {
+        var turn = MessagingLiveTurn(destinationID: "dm:swe", profileID: "swe-id")
+        XCTAssertTrue(turn.apply(.messageDelta(sessionId: "id-from-history", text: "Hel")))
+        XCTAssertTrue(turn.apply(.messageDelta(sessionId: "id-from-ws", text: "lo")))
+        XCTAssertEqual(turn.text, "Hello")
+        XCTAssertEqual(turn.sessionIDs, ["id-from-history", "id-from-ws"])
+    }
+
+    func testInactiveTurnIgnoresAnUnseenSessionId() {
         var turn = MessagingLiveTurn(destinationID: "dm:swe", profileID: "swe-id")
         _ = turn.apply(.messageDelta(sessionId: "ours", text: "Hi"))
+        turn.markDropped()
         XCTAssertFalse(turn.apply(.messageDelta(sessionId: "other", text: "leak")))
         XCTAssertEqual(turn.text, "Hi")
+    }
+
+    func testSessionTitleUnionsBothOpaqueIds() {
+        var turn = MessagingLiveTurn(destinationID: "dm:swe", profileID: "swe-id")
+        XCTAssertTrue(
+            turn.apply(.sessionTitle(runtimeSessionId: "id-from-ws", storedSessionId: "id-from-history", title: "swe"))
+        )
+        XCTAssertEqual(turn.sessionIDs, ["id-from-ws", "id-from-history"])
     }
 
     func testHistorySettlesDuplicateStreamingText() {
@@ -117,26 +134,125 @@ final class MessagingStreamRoutingTests: XCTestCase {
     func testRunsWithoutSessionIdDoNotMintALiveTurn() {
         let store = MessagingStore()
         let destination = MessagingDestination(conversationID: nil, profileID: "swe-id")
-        let history = MessagingHistory(
-            conversation: MessagingConversation(
-                id: "c1",
-                kind: "dm",
-                title: "swe",
-                profiles: ["swe-id"],
-                defaultResponder: "swe-id",
-                revision: 1,
-                preview: "",
-                updatedAt: 1,
-                unread: 0,
-                archived: false,
-                pinned: false,
-                muted: false
-            ),
-            messages: [],
-            runs: [MessagingRun(id: "r1", profile: "swe-id", status: "running", detail: "")],
-            before: nil
-        )
-        store.syncLiveTurn(for: destination, history: history)
+        store.syncLiveTurn(for: destination, history: messagingHistory(profile: "swe-id", runSessionID: nil))
         XCTAssertNil(store.liveTurn(for: destination))
     }
+
+    func testHistorySessionIdMismatchStillReceivesLiveDeltasAndTools() {
+        let store = MessagingStore()
+        let destination = MessagingDestination(conversationID: nil, profileID: "swe-id")
+        store.startLiveTurn(for: destination, profileID: "swe-id")
+        store.syncLiveTurn(
+            for: destination,
+            history: messagingHistory(profile: "swe-id", runSessionID: "id-from-history")
+        )
+        XCTAssertEqual(store.liveTurn(for: destination)?.sessionIDs, ["id-from-history"])
+
+        store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "Hel"))
+        store.handleUnboundStreamEvent(
+            .toolStart(sessionId: "id-from-ws", toolName: "web_search", toolInput: "q=")
+        )
+        store.handleUnboundStreamEvent(
+            .toolComplete(sessionId: "id-from-ws", toolName: "web_search", toolOutput: "sun")
+        )
+        store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "lo"))
+        store.handleUnboundStreamEvent(
+            .messageComplete(sessionId: "id-from-ws", messageId: "m1", content: "Hello", reasoning: nil)
+        )
+
+        let turn = store.liveTurn(for: destination)
+        XCTAssertEqual(turn?.text, "Hello")
+        XCTAssertEqual(turn?.sessionIDs, ["id-from-history", "id-from-ws"])
+        XCTAssertEqual(turn?.tools.first?.name, "web_search")
+        XCTAssertEqual(turn?.tools.first?.status, .complete)
+        XCTAssertEqual(turn?.phase, .completing)
+    }
+
+    func testMismatchedSessionIdDoesNotCrossWireAnotherConversation() {
+        let store = MessagingStore()
+        let swe = MessagingDestination(conversationID: nil, profileID: "swe-id")
+        let designer = MessagingDestination(conversationID: nil, profileID: "designer-id")
+        store.startLiveTurn(for: swe, profileID: "swe-id")
+        store.startLiveTurn(for: designer, profileID: "designer-id")
+        store.syncLiveTurn(for: swe, history: messagingHistory(id: "c-swe", profile: "swe-id", runSessionID: "stored-swe"))
+        store.syncLiveTurn(
+            for: designer,
+            history: messagingHistory(id: "c-des", profile: "designer-id", runSessionID: "stored-des")
+        )
+
+        store.handleUnboundStreamEvent(.messageDelta(sessionId: "runtime-unknown", text: "leak"))
+
+        XCTAssertEqual(store.liveTurn(for: swe)?.text, "")
+        XCTAssertEqual(store.liveTurn(for: designer)?.text, "")
+        XCTAssertEqual(store.liveTurn(for: swe)?.sessionIDs, ["stored-swe"])
+        XCTAssertEqual(store.liveTurn(for: designer)?.sessionIDs, ["stored-des"])
+    }
+
+    func testKnownSessionIdStillRoutesWhenTwoTurnsAreLive() {
+        let store = MessagingStore()
+        let swe = MessagingDestination(conversationID: nil, profileID: "swe-id")
+        let designer = MessagingDestination(conversationID: nil, profileID: "designer-id")
+        store.startLiveTurn(for: swe, profileID: "swe-id")
+        store.startLiveTurn(for: designer, profileID: "designer-id")
+        store.syncLiveTurn(for: swe, history: messagingHistory(id: "c-swe", profile: "swe-id", runSessionID: "stored-swe"))
+        store.syncLiveTurn(
+            for: designer,
+            history: messagingHistory(id: "c-des", profile: "designer-id", runSessionID: "stored-des")
+        )
+
+        store.handleUnboundStreamEvent(.messageDelta(sessionId: "stored-swe", text: "ours"))
+        store.handleUnboundStreamEvent(.messageDelta(sessionId: "runtime-unknown", text: "leak"))
+
+        XCTAssertEqual(store.liveTurn(for: swe)?.text, "ours")
+        XCTAssertEqual(store.liveTurn(for: swe)?.sessionIDs, ["stored-swe"])
+        XCTAssertEqual(store.liveTurn(for: designer)?.text, "")
+        XCTAssertEqual(store.liveTurn(for: designer)?.sessionIDs, ["stored-des"])
+    }
+
+    func testMismatchedSidAliasesOntoTheOnlyActiveTurn() {
+        let store = MessagingStore()
+        let swe = MessagingDestination(conversationID: nil, profileID: "swe-id")
+        let designer = MessagingDestination(conversationID: nil, profileID: "designer-id")
+        store.startLiveTurn(for: swe, profileID: "swe-id")
+        store.startLiveTurn(for: designer, profileID: "designer-id")
+        store.syncLiveTurn(for: swe, history: messagingHistory(id: "c-swe", profile: "swe-id", runSessionID: "stored-swe"))
+        store.syncLiveTurn(
+            for: designer,
+            history: messagingHistory(id: "c-des", profile: "designer-id", runSessionID: "stored-des")
+        )
+        store.handleUnboundStreamEvent(.messageInterrupted(sessionId: "stored-des"))
+
+        store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "live"))
+
+        XCTAssertEqual(store.liveTurn(for: swe)?.text, "live")
+        XCTAssertEqual(store.liveTurn(for: swe)?.sessionIDs, ["stored-swe", "id-from-ws"])
+        XCTAssertEqual(store.liveTurn(for: designer)?.text, "")
+        XCTAssertEqual(store.liveTurn(for: designer)?.phase, .interrupted)
+    }
+}
+
+private func messagingHistory(
+    id: String = "c1",
+    profile: String,
+    runSessionID: String?
+) -> MessagingHistory {
+    MessagingHistory(
+        conversation: MessagingConversation(
+            id: id,
+            kind: "dm",
+            title: profile,
+            profiles: [profile],
+            defaultResponder: profile,
+            revision: 1,
+            preview: "",
+            updatedAt: 1,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            muted: false
+        ),
+        messages: [],
+        runs: [MessagingRun(id: "r1", profile: profile, status: "running", detail: "", sessionID: runSessionID)],
+        before: nil
+    )
 }

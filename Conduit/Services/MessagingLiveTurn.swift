@@ -32,7 +32,10 @@ struct MessagingLiveTurn: Equatable {
     /// bubble can hide without dropping live tool cards.
     var settledTextInHistory = false
 
-    var acceptsNewSession: Bool { sessionIDs.isEmpty && phase.isActive }
+    /// Live WS `session_id` and history `runs[].session_id` are both opaque
+    /// aliases of the same in-flight turn. Either may arrive first; neither
+    /// shape is authoritative until the backend reconciles them.
+    var canAliasLiveSession: Bool { phase.isActive }
 
     var showsStreamingText: Bool {
         !settledTextInHistory && (!text.isEmpty || phase == .streaming || phase == .starting)
@@ -58,15 +61,19 @@ struct MessagingLiveTurn: Equatable {
         if self.profileID == nil { self.profileID = profileID }
     }
 
-    /// Returns false when the event belongs to a different bound session.
+    /// Returns false when the event cannot belong to this turn: an inactive
+    /// overlay must not absorb a stream whose ids it has never seen.
     @discardableResult
     mutating func apply(_ event: StreamEvent) -> Bool {
-        let sessionID = Self.sessionID(for: event)
-        if !sessionID.isEmpty {
+        let incoming = Self.sessionIDs(for: event)
+        if !incoming.isEmpty {
             if sessionIDs.isEmpty {
-                sessionIDs.insert(sessionID)
-            } else if !sessionIDs.contains(sessionID) {
-                return false
+                sessionIDs.formUnion(incoming)
+            } else if sessionIDs.isDisjoint(with: incoming) {
+                guard phase.isActive else { return false }
+                sessionIDs.formUnion(incoming)
+            } else {
+                sessionIDs.formUnion(incoming)
             }
         }
 
@@ -188,8 +195,18 @@ struct MessagingLiveTurn: Equatable {
         }
     }
 
-    static func sessionID(for event: StreamEvent) -> String {
-        event.sessionID
+    static func sessionIDs(for event: StreamEvent) -> Set<String> {
+        switch event {
+        case .sessionTitle(let runtimeSessionId, let storedSessionId, _):
+            return Set([runtimeSessionId, storedSessionId].compactMap(normalizedSessionID))
+        default:
+            return Set([event.sessionID].compactMap(normalizedSessionID))
+        }
+    }
+
+    static func normalizedSessionID(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

@@ -487,23 +487,18 @@ extension MessagingStore: MessagingStreamRouting {
     func handleUnboundStreamEvent(_ event: StreamEvent) {
         guard !liveTurns.isEmpty else { return }
         if case .unparsed = event { return }
-        let sessionID = event.sessionID
-        if !sessionID.isEmpty, let key = liveTurns.first(where: { $0.value.sessionIDs.contains(sessionID) })?.key {
+        let incoming = MessagingLiveTurn.sessionIDs(for: event)
+        if !incoming.isEmpty,
+           let key = liveTurns.first(where: { !$0.value.sessionIDs.isDisjoint(with: incoming) })?.key {
             apply(event, to: key)
             return
         }
-        let waiting = liveTurns.filter { $0.value.acceptsNewSession }
-        if waiting.count == 1, let key = waiting.keys.first {
-            apply(event, to: key)
-            return
-        }
-        if waiting.count > 1, !sessionID.isEmpty {
-            return
-        }
-        if waiting.isEmpty, liveTurns.count == 1, let key = liveTurns.keys.first,
-           liveTurns[key]?.phase.isActive == true {
-            apply(event, to: key)
-        }
+        // History and the wire may name the same turn with different opaque
+        // ids. Alias onto the unique in-flight overlay; never guess among
+        // two conversations or profiles.
+        let aliasable = liveTurns.filter { $0.value.canAliasLiveSession }
+        guard aliasable.count == 1, let key = aliasable.keys.first else { return }
+        apply(event, to: key)
     }
 
     func handleStreamDisconnected() {
