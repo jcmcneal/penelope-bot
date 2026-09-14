@@ -38,6 +38,15 @@ struct MessagingLiveTurn: Equatable {
         !settledTextInHistory && (!text.isEmpty || phase == .streaming || phase == .starting)
     }
 
+    /// History poll should only go sub-second while tokens or tools are live.
+    /// A shell turn or a settled overlay must not collapse the 1s/4s cadence.
+    var needsFastHistorySettle: Bool {
+        if settledTextInHistory {
+            return tools.contains { $0.status == .running }
+        }
+        return !text.isEmpty || tools.contains { $0.status == .running }
+    }
+
     mutating func bindSession(_ sessionID: String) {
         let trimmed = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }

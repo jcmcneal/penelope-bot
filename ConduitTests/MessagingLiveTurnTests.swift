@@ -80,6 +80,17 @@ final class MessagingLiveTurnTests: XCTestCase {
         )
         XCTAssertEqual(withSession.sessionID, "abc")
     }
+
+    func testFastHistorySettleOnlyWhileTokensOrToolsAreLive() {
+        var turn = MessagingLiveTurn(destinationID: "dm:swe", profileID: "swe-id")
+        XCTAssertFalse(turn.needsFastHistorySettle)
+        _ = turn.apply(.messageDelta(sessionId: "s", text: "Hi"))
+        XCTAssertTrue(turn.needsFastHistorySettle)
+        turn.absorbHistory([
+            MessagingMessage(id: "m1", sequence: 1, author: "swe-id", body: "Hi", createdAt: 1)
+        ])
+        XCTAssertFalse(turn.needsFastHistorySettle)
+    }
 }
 
 @MainActor
@@ -101,5 +112,31 @@ final class MessagingStreamRoutingTests: XCTestCase {
         store.handleStreamDisconnected()
         XCTAssertEqual(store.liveTurn(for: destination)?.phase, .interrupted)
         XCTAssertEqual(store.liveTurn(for: destination)?.text, "partial")
+    }
+
+    func testRunsWithoutSessionIdDoNotMintALiveTurn() {
+        let store = MessagingStore()
+        let destination = MessagingDestination(conversationID: nil, profileID: "swe-id")
+        let history = MessagingHistory(
+            conversation: MessagingConversation(
+                id: "c1",
+                kind: "dm",
+                title: "swe",
+                profiles: ["swe-id"],
+                defaultResponder: "swe-id",
+                revision: 1,
+                preview: "",
+                updatedAt: 1,
+                unread: 0,
+                archived: false,
+                pinned: false,
+                muted: false
+            ),
+            messages: [],
+            runs: [MessagingRun(id: "r1", profile: "swe-id", status: "running", detail: "")],
+            before: nil
+        )
+        store.syncLiveTurn(for: destination, history: history)
+        XCTAssertNil(store.liveTurn(for: destination))
     }
 }

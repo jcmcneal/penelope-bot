@@ -12381,9 +12381,12 @@ final class AppState: ObservableObject {
             )
             return
         }
+        // Buffer first: an in-flight resume may accept a session that is not
+        // yet the displayed ChatView identity. Routing those events to
+        // messaging would drop them instead of replaying after settle.
+        if bufferIfReconciling(event) { return }
         let streamSessionId = sessionID(for: event)
         if eventBelongsToActiveSession(streamSessionId) {
-            if bufferIfReconciling(event) { return }
             applyStreamEvent(event)
             return
         }

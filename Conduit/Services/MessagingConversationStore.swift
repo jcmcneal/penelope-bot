@@ -57,7 +57,7 @@ final class MessagingConversationStore: ObservableObject {
     func saveDraft() { defaults.set(draft, forKey: draftKey) }
 
     var historyPollInterval: Duration {
-        if owner.liveTurn(for: destination)?.phase.isActive == true {
+        if owner.liveTurn(for: destination)?.needsFastHistorySettle == true {
             return .milliseconds(250)
         }
         let hasActiveRun = history?.runs.contains { ["queued", "running"].contains($0.status.lowercased()) } == true

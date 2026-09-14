@@ -443,29 +443,39 @@ final class MessagingStore: ObservableObject {
     }
 
     func syncLiveTurn(for destination: MessagingDestination, history: MessagingHistory?) {
+        let activeRuns = history?.runs.filter { ["queued", "running"].contains($0.status.lowercased()) } ?? []
         guard var turn = liveTurns[destination.id] else {
-            guard let history else { return }
-            let active = history.runs.filter { ["queued", "running"].contains($0.status.lowercased()) }
-            guard !active.isEmpty else { return }
+            let bindable = activeRuns.filter { $0.sessionID != nil }
+            guard !bindable.isEmpty else { return }
             var turn = MessagingLiveTurn(
                 destinationID: destination.id,
-                profileID: active.first?.profile ?? destination.profileID
+                profileID: bindable.first?.profile ?? destination.profileID
             )
-            for run in active {
+            for run in bindable {
                 if let sessionID = run.sessionID { turn.bindSession(sessionID) }
                 turn.bindProfile(run.profile)
             }
             liveTurns[destination.id] = turn
             return
         }
+        for run in activeRuns {
+            if let sessionID = run.sessionID { turn.bindSession(sessionID) }
+            turn.bindProfile(run.profile)
+        }
         if let history {
-            for run in history.runs where ["queued", "running"].contains(run.status.lowercased()) {
-                if let sessionID = run.sessionID { turn.bindSession(sessionID) }
-                turn.bindProfile(run.profile)
-            }
             turn.absorbHistory(history.messages)
         }
+        if shouldDrop(turn, activeRuns: activeRuns) {
+            liveTurns[destination.id] = nil
+            return
+        }
         liveTurns[destination.id] = turn
+    }
+
+    private func shouldDrop(_ turn: MessagingLiveTurn, activeRuns: [MessagingRun]) -> Bool {
+        if turn.phase.isActive { return false }
+        if turn.tools.contains(where: { $0.status == .running }) { return false }
+        return activeRuns.isEmpty && (turn.settledTextInHistory || turn.text.isEmpty)
     }
 
     func clearLiveTurn(for destination: MessagingDestination) {
