@@ -71,19 +71,22 @@ final class SettledMessageIsolationTests: XCTestCase {
     /// otherwise read as a spurious settled re-evaluation (the same failure
     /// mode testDynamicTypeChangeReOpensSettledContentGate was hardened
     /// against).
+    ///
+    /// Root type is the concrete harness, not `AnyView`. Erasing the row
+    /// makes UIHostingController treat a same-value replacement as a first
+    /// mount, so `.equatable()` has no previous value and Markdown counts
+    /// one evaluation — the 1≠0 failure CI saw on iOS 26.5 after a dirty
+    /// test process. ChatView itself never wraps settled rows in AnyView.
     private func mountRow(
         message: ChatMessage,
         appState: AppState,
         resolver: GatewayMediaDataURLResolver?
-    ) -> UIHostingController<AnyView> {
-        let row = AnyView(AssistantBubble(
+    ) -> UIHostingController<SettledGateHarnessRow> {
+        let host = UIHostingController(rootView: harness(
             message: message,
-            readAloudController: appState.messageReadAloudController,
-            gatewayResolver: resolver
-        )
-        .environmentObject(appState)
-        .environment(\.sizeCategory, .large))
-        let host = UIHostingController(rootView: row)
+            appState: appState,
+            resolver: resolver
+        ))
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
         window.rootViewController = host
         window.isHidden = false
@@ -92,6 +95,21 @@ final class SettledMessageIsolationTests: XCTestCase {
         host.view.layoutIfNeeded()
         RunLoop.current.run(until: Date())
         return host
+    }
+
+    private func harness(
+        message: ChatMessage,
+        appState: AppState,
+        resolver: GatewayMediaDataURLResolver?,
+        sizeCategory: ContentSizeCategory = .large
+    ) -> SettledGateHarnessRow {
+        SettledGateHarnessRow(
+            message: message,
+            readAloudController: appState.messageReadAloudController,
+            gatewayResolver: resolver,
+            appState: appState,
+            sizeCategory: sizeCategory
+        )
     }
 
     func testIdenticalRowRecreationSkipsSettledMarkdownPresentation() throws {
@@ -149,13 +167,7 @@ final class SettledMessageIsolationTests: XCTestCase {
         // IDENTICAL inputs (equal message value, same resolver identity,
         // same pinned Dynamic Type environment).
         TranscriptPerf.reset()
-        host.rootView = AnyView(AssistantBubble(
-            message: message,
-            readAloudController: appState.messageReadAloudController,
-            gatewayResolver: resolver
-        )
-        .environmentObject(appState)
-        .environment(\.sizeCategory, .large))
+        host.rootView = harness(message: message, appState: appState, resolver: resolver)
         host.view.setNeedsLayout()
         host.view.layoutIfNeeded()
 
@@ -187,13 +199,7 @@ final class SettledMessageIsolationTests: XCTestCase {
         TranscriptPerf.reset()
         var changed = markdownMessage(id: "m2")
         changed.content += "\n\nA second paragraph with different content."
-        host.rootView = AnyView(AssistantBubble(
-            message: changed,
-            readAloudController: appState.messageReadAloudController,
-            gatewayResolver: resolver
-        )
-        .environmentObject(appState)
-        .environment(\.sizeCategory, .large))
+        host.rootView = harness(message: changed, appState: appState, resolver: resolver)
         host.view.setNeedsLayout()
         host.view.layoutIfNeeded()
         drainUntil(2.0) { TranscriptPerf.settledMarkdownTextBodyEvaluations > 0 }
@@ -217,13 +223,11 @@ final class SettledMessageIsolationTests: XCTestCase {
 
         // A different resolver identity (profile switch) must open the gate.
         TranscriptPerf.reset()
-        host.rootView = AnyView(AssistantBubble(
+        host.rootView = harness(
             message: markdownMessage(),
-            readAloudController: appState.messageReadAloudController,
-            gatewayResolver: resolverB
+            appState: appState,
+            resolver: resolverB
         )
-        .environmentObject(appState)
-        .environment(\.sizeCategory, .large))
         host.view.setNeedsLayout()
         host.view.layoutIfNeeded()
         drainUntil(2.0) { TranscriptPerf.settledMarkdownTextBodyEvaluations > 0 }
@@ -316,17 +320,12 @@ final class SettledMessageIsolationTests: XCTestCase {
         let resolver = GatewayMediaDataURLResolver(appState: appState, profile: "default")
         let message = markdownMessage()
 
-        func harness(_ category: ContentSizeCategory) -> SettledGateHarnessRow {
-            SettledGateHarnessRow(
-                message: message,
-                readAloudController: appState.messageReadAloudController,
-                gatewayResolver: resolver,
-                appState: appState,
-                sizeCategory: category
-            )
-        }
-
-        let host = UIHostingController(rootView: harness(.large))
+        let host = UIHostingController(rootView: harness(
+            message: message,
+            appState: appState,
+            resolver: resolver,
+            sizeCategory: .large
+        ))
         testWindow = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
         testWindow?.rootViewController = host
         testWindow?.isHidden = false
@@ -337,7 +336,12 @@ final class SettledMessageIsolationTests: XCTestCase {
         drainUntil(2.0) { TranscriptPerf.settledMarkdownTextBodyEvaluations > 0 }
 
         TranscriptPerf.reset()
-        host.rootView = harness(.extraExtraLarge)
+        host.rootView = harness(
+            message: message,
+            appState: appState,
+            resolver: resolver,
+            sizeCategory: .extraExtraLarge
+        )
         host.view.setNeedsLayout()
         host.view.layoutIfNeeded()
         drainUntil(2.0) { TranscriptPerf.settledMarkdownTextBodyEvaluations > 0 }
@@ -363,7 +367,7 @@ final class SettledMessageIsolationTests: XCTestCase {
     }
 }
 
-/// Concrete hosted root for the Dynamic Type gate test. A stable concrete
+/// Concrete hosted root for settled-row isolation tests. A stable concrete
 /// type (instead of an erased AnyView) gives UIHostingController direct value
 /// diffing: changing `sizeCategory` is a first-class rootView value change,
 /// and the environment write happens inside `body` exactly once per value.
