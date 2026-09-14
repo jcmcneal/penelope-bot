@@ -81,10 +81,32 @@ enum StreamEventParser {
                 ?? payload?["args"]?.descriptiveStringValue
             return .toolStart(sessionId: sessionId, toolName: name, toolInput: input)
 
+        case "tool.delta", "tool.args", "tool.input.delta", "tool_call.delta":
+            let name = payload?["name"]?.stringValue ?? ""
+            let replace = payload?["arguments"] != nil || payload?["args"] != nil
+                || payload?["input"] != nil
+            let input = payload?["delta"]?.descriptiveStringValue
+                ?? payload?["text"]?.descriptiveStringValue
+                ?? payload?["args_text"]?.descriptiveStringValue
+                ?? payload?["arguments"]?.descriptiveStringValue
+                ?? payload?["args"]?.descriptiveStringValue
+                ?? payload?["input"]?.descriptiveStringValue
+                ?? ""
+            if input.isEmpty { return nil }
+            return .toolDelta(sessionId: sessionId, toolName: name, toolInput: input, replace: replace)
+
         case "tool.complete", "tool_result":
             let name = payload?["name"]?.stringValue ?? ""
             let output = payload?["output"]?.descriptiveStringValue ?? payload?["result"]?.descriptiveStringValue
             return .toolComplete(sessionId: sessionId, toolName: name, toolOutput: output)
+
+        case "tool.error", "tool.failed":
+            let name = payload?["name"]?.stringValue ?? ""
+            let message = payload?["message"]?.stringValue
+                ?? payload?["error"]?.descriptiveStringValue
+                ?? payload?["output"]?.descriptiveStringValue
+                ?? "Tool failed."
+            return .toolFailed(sessionId: sessionId, toolName: name, message: message)
 
         case "review.summary":
             guard let payload, let review = MessageNormalizer.reviewActivity(from: payload, eventSessionId: sessionId) else { return nil }

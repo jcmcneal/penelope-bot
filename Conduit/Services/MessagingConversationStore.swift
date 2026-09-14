@@ -41,7 +41,10 @@ final class MessagingConversationStore: ObservableObject {
         draft = defaults.string(forKey: draftKey) ?? ""
         if let data = defaults.data(forKey: draftKey + ".pending") {
             pending = try? JSONDecoder().decode(PendingMessagingSend.self, from: data)
-            if pending != nil { beginAwaitingReply() }
+            if pending != nil {
+                owner.startLiveTurn(for: destination, profileID: destination.profileID)
+                beginAwaitingReply()
+            }
         }
     }
 
@@ -54,6 +57,9 @@ final class MessagingConversationStore: ObservableObject {
     func saveDraft() { defaults.set(draft, forKey: draftKey) }
 
     var historyPollInterval: Duration {
+        if owner.liveTurn(for: destination)?.phase.isActive == true {
+            return .milliseconds(250)
+        }
         let hasActiveRun = history?.runs.contains { ["queued", "running"].contains($0.status.lowercased()) } == true
         return prefersUrgentPolling || hasActiveRun ? Self.urgentPollInterval : .seconds(4)
     }
@@ -61,6 +67,7 @@ final class MessagingConversationStore: ObservableObject {
     private func adopt(_ value: MessagingHistory?) {
         let merged = value.map { MessagingHistoryCache.merge(history, incoming: $0) }
         if !MessagingHistoryCache.equivalent(history, merged) { history = merged }
+        owner.syncLiveTurn(for: destination, history: merged ?? history)
         refreshAwaitingReplyFromRuns()
     }
 
@@ -85,6 +92,10 @@ final class MessagingConversationStore: ObservableObject {
         let value = PendingMessagingSend(id: UUID().uuidString, text: payload, recipients: recipients)
         pending = value
         defaults.set(try? JSONEncoder().encode(value), forKey: draftKey + ".pending")
+        owner.startLiveTurn(
+            for: destination,
+            profileID: destination.profileID ?? recipients.first
+        )
         beginAwaitingReply()
         await submit(value)
         return pending != nil || error == nil
@@ -100,6 +111,7 @@ final class MessagingConversationStore: ObservableObject {
         } catch DashboardTicketBridgeError.http(let status, let detail) where [400, 403, 409, 422].contains(status) {
             guard epoch == owner.generation else { return }
             pending = nil; defaults.removeObject(forKey: draftKey + ".pending")
+            owner.clearLiveTurn(for: destination)
             clearAwaitingReply()
             record(DashboardTicketBridgeError.http(status: status, detail: detail))
         } catch { if epoch == owner.generation { self.error = MessagingError.unknownOutcome.localizedDescription } }
@@ -130,8 +142,12 @@ final class MessagingConversationStore: ObservableObject {
         pending = nil; defaults.removeObject(forKey: draftKey + ".pending")
         if draft == value.text { draft = ""; saveDraft() }
         error = nil
-        await load()
-        await owner.refreshConversations(force: true)
+        let followUpDestination = destination
+        Task { @MainActor [weak self] in
+            guard let self, self.canWrite, self.destination == followUpDestination else { return }
+            await self.load()
+            await self.owner.refreshConversations(force: true)
+        }
     }
     func markRead(through sequence: Int) async {
         guard canWrite, sequence > lastRead, let service = owner.service, let conversation = history?.conversation else { return }

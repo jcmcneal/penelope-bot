@@ -129,10 +129,12 @@ final class ResponseHapticPolicyTests: XCTestCase {
         XCTAssertEqual(ResponseHapticPolicy.signal(for: .delegateAgent(sessionId: sessionID, activity: delegateTool)), .tool)
         XCTAssertNil(ResponseHapticPolicy.signal(for: .delegateAgent(sessionId: sessionID, activity: delegateProgress)))
         XCTAssertEqual(ResponseHapticPolicy.signal(for: .messageError(sessionId: sessionID, message: "failed")), .failure)
+        XCTAssertEqual(ResponseHapticPolicy.signal(for: .toolFailed(sessionId: sessionID, toolName: "shell", message: "denied")), .failure)
         XCTAssertEqual(ResponseHapticPolicy.signal(for: .messageInterrupted(sessionId: sessionID)), .reset)
         XCTAssertNil(ResponseHapticPolicy.signal(for: .toolStart(sessionId: sessionID, toolName: "clarify", toolInput: nil)))
         XCTAssertNil(ResponseHapticPolicy.signal(for: .messageComplete(sessionId: sessionID, messageId: nil, content: nil, reasoning: nil)))
         XCTAssertNil(ResponseHapticPolicy.signal(for: .toolComplete(sessionId: sessionID, toolName: "shell", toolOutput: nil)))
+        XCTAssertNil(ResponseHapticPolicy.signal(for: .toolDelta(sessionId: sessionID, toolName: "shell", toolInput: "ls", replace: false)))
         XCTAssertNil(ResponseHapticPolicy.signal(for: .sessionBusy(sessionId: sessionID, busy: false)))
     }
 

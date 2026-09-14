@@ -169,6 +169,12 @@ struct MainView: View {
             createMessagingSetupConversation()
         }
         .environmentObject(shell)
+        .onAppear { appState.messagingStreamRouter = messaging }
+        .onDisappear {
+            if appState.messagingStreamRouter === messaging {
+                appState.messagingStreamRouter = nil
+            }
+        }
     }
 
     @ViewBuilder

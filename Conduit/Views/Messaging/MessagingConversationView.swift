@@ -124,7 +124,7 @@ struct MessagingConversationView: View {
         }
         .onChange(of: model.draft) { _, _ in model.saveDraft() }
         .onChange(of: owner.generation) { _, _ in close() }
-        .task(id: "\(scenePhase)-\(model.prefersUrgentPolling)") {
+        .task(id: "\(scenePhase)-\(model.prefersUrgentPolling)-\(liveTurn?.phase.isActive == true)") {
             guard scenePhase == .active else { return }
             if model.pending != nil { await model.checkDelivery() }
             while !Task.isCancelled {
@@ -197,7 +197,9 @@ struct MessagingConversationView: View {
                     .padding(.vertical, 4)
                 }
 
-                if model.history?.messages.isEmpty != false {
+                if model.history?.messages.isEmpty != false,
+                   optimisticPendingMessage == nil,
+                   !showsLiveTurnOverlay {
                     ContentUnavailableView(
                         "Message \(title)",
                         systemImage: "bubble.left.and.bubble.right",
@@ -231,6 +233,22 @@ struct MessagingConversationView: View {
                                 )
                             })
                     }
+                }
+
+                if let pending = optimisticPendingMessage {
+                    messagingBubble(pending, chat: ChatMessage(
+                        id: pending.id,
+                        role: .user,
+                        content: pending.body,
+                        timestamp: MessagingTranscriptProjection.timestampString(for: pending.createdAt)
+                    ))
+                    .id(pending.id)
+                    .opacity(0.85)
+                    .accessibilityIdentifier("messaging.optimistic-pending")
+                }
+
+                if let turn = liveTurn {
+                    liveTurnChrome(turn)
                 }
 
                 Color.clear
@@ -359,6 +377,11 @@ struct MessagingConversationView: View {
             }
             .onChange(of: scrollToLatestPulse) { _, _ in
                 performViewportEffects(viewport.explicitLatestRequested(), using: proxy)
+            }
+            .onChange(of: liveTurn) { _, _ in
+                if followsLatest {
+                    performViewportEffects(viewport.explicitLatestRequested(), using: proxy)
+                }
             }
     }
 
@@ -574,14 +597,85 @@ struct MessagingConversationView: View {
         }
     }
 
+    private var liveTurn: MessagingLiveTurn? {
+        owner.liveTurn(for: model.destination)
+    }
+
+    private var showsLiveTurnOverlay: Bool {
+        guard let turn = liveTurn else { return false }
+        return !turn.tools.isEmpty || turn.showsStreamingText || turn.errorMessage != nil
+    }
+
+    private var optimisticPendingMessage: MessagingMessage? {
+        guard let pending = model.pending else { return nil }
+        if model.history?.messages.contains(where: { $0.id == pending.id || $0.body == pending.text }) == true {
+            return nil
+        }
+        return MessagingMessage(
+            id: pending.id,
+            sequence: (model.history?.messages.last?.sequence ?? 0) + 1,
+            author: "user",
+            body: pending.text,
+            createdAt: Date().timeIntervalSince1970
+        )
+    }
+
+    @ViewBuilder
+    private func liveTurnChrome(_ turn: MessagingLiveTurn) -> some View {
+        let profile = owner.profiles.first { $0.id == turn.profileID }
+        let profileID = profile?.name ?? turn.profileID ?? "bot"
+        let displayName = profile?.displayName ?? profileName(turn.profileID ?? "bot")
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(turn.tools.enumerated()), id: \.offset) { index, tool in
+                ToolCard(
+                    message: ChatMessage(
+                        id: "live-tool-\(index)-\(tool.name)",
+                        role: .tool,
+                        content: "",
+                        timestamp: MessagingTranscriptProjection.timestampString(for: Date().timeIntervalSince1970),
+                        tool: tool
+                    ),
+                    alwaysVisible: true,
+                    expandByDefault: true
+                )
+            }
+            if turn.showsStreamingText {
+                if turn.text.isEmpty {
+                    HStack {
+                        MessagingAwaitingReplyDots()
+                        Spacer(minLength: 0)
+                    }
+                } else {
+                    StreamingBubble(
+                        text: turn.text,
+                        active: turn.phase.isActive,
+                        profileID: profileID,
+                        displayName: displayName,
+                        avatarURL: appState.profileAvatarURL(for: profileID)
+                    )
+                }
+            }
+            if let error = turn.errorMessage, turn.phase == .failed || turn.phase == .interrupted {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("messaging.stream-error")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("messaging.live-turn")
+    }
+
     private var activePresence: [MessagingRunPresence.Item] {
         MessagingRunPresence.collapsed(model.history?.runs ?? [])
     }
 
     @ViewBuilder
     private var activeRunPresence: some View {
-        let items = activePresence
-        if !items.isEmpty {
+        if showsLiveTurnOverlay {
+            EmptyView()
+        } else if !activePresence.isEmpty {
+            let items = activePresence
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
                     ForEach(items) { item in

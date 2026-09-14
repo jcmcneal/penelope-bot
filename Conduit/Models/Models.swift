@@ -91,6 +91,7 @@ struct ToolActivity: Codable, Equatable {
     enum Status: String, Codable {
         case running
         case complete
+        case failed
     }
 }
 

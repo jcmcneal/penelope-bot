@@ -446,6 +446,8 @@ final class AppState: ObservableObject {
     @Published private(set) var defaultProfileName: String
     @Published private(set) var profileAvatarURLs: [String: URL]
     @Published private(set) var isProfileSwitching = false
+    /// Bots/messaging overlay for stream events that are not the active ChatView session.
+    weak var messagingStreamRouter: MessagingStreamRouting?
     @Published private(set) var appIconChoice: AppIconChoice
     @Published private(set) var dashboardTicketBridge: DashboardTicketBridge?
     private var voiceAssistantObservers: [UUID: @MainActor (VoiceAssistantEvent) -> Void] = [:]
@@ -5315,6 +5317,7 @@ final class AppState: ObservableObject {
     // MARK: - Reconnect and scene lifecycle
 
     private func handleDisconnect() {
+        messagingStreamRouter?.handleStreamDisconnected()
         let wasRunning = isBusy
         isConnected = false
         guard connection != nil else { return }
@@ -11107,6 +11110,52 @@ final class AppState: ObservableObject {
         lastReportedSessionYolo = nil
 
         do {
+            if isConnected, let liveClient = client, liveClient.isConnected {
+                liveClient.retargetProfile(target)
+                markChatViewportReplacement()
+                clearPendingDecisionRestorationGuard()
+                setActiveProfile(target)
+                sessions = sessionCatalogCache.cachedSessions(forKey: "\(target):exclude") ?? []
+                cronSessions = sessionCatalogCache.cachedSessions(forKey: "\(target):cron") ?? []
+                archivedSessions = []
+                projects = []
+                supportsProjects = false
+                projectsLoading = false
+                slashCommands = Self.builtInSlashCommands
+                restoreActiveSessionState(for: target)
+                restorePinnedSessions(for: target)
+                clearStreamingText()
+                resetReasoningTurn()
+                messages = []
+                persistedTranscriptWindow = nil
+                restoreColdTranscriptDisplay(profile: target)
+                defaults.set(target, forKey: activeProfileKey)
+                isProfileSwitching = false
+
+                await syncSession(
+                    purpose: .preserveCurrent,
+                    using: nil,
+                    automaticWorkToken: nil,
+                    requiredViewportTransitionGeneration: transitionGeneration
+                )
+                guard chatViewportTransitionIsCurrent(generation: transitionGeneration) else {
+                    return false
+                }
+                finishChatViewportTransitionIfNoTranscriptReplacement(
+                    generation: transitionGeneration
+                )
+                await loadChatResumeBusyInputMode(using: liveClient)
+                guard chatViewportTransitionIsCurrent(generation: transitionGeneration) else {
+                    return false
+                }
+                await loadChatResumeProfileDisplayPreferences()
+                guard chatViewportTransitionIsCurrent(generation: transitionGeneration) else {
+                    return false
+                }
+                Task { await loadChatResumeSlashCommands() }
+                return true
+            }
+
             let ticket = try await mintChatResumeTicket(for: savedConnection)
             guard chatViewportTransitionIsCurrent(generation: transitionGeneration) else {
                 return false
@@ -12312,6 +12361,16 @@ final class AppState: ObservableObject {
 
     // MARK: - Stream event handling
 
+    private static func mergeToolInput(existing: String?, incoming: String?, replace: Bool) -> String? {
+        let current = existing ?? ""
+        let next = incoming ?? ""
+        if replace || current.isEmpty || next.hasPrefix(current) {
+            return next.isEmpty ? existing : next
+        }
+        if current.hasPrefix(next) { return current }
+        return current + next
+    }
+
     func handleStreamEvent(_ event: StreamEvent) {
         if case .sessionTitle(let runtimeSessionId, let storedSessionId, let title) = event {
             let taskKey = "\(activeProfile)|\(runtimeSessionId)"
@@ -12322,8 +12381,14 @@ final class AppState: ObservableObject {
             )
             return
         }
-        if bufferIfReconciling(event) { return }
-        applyStreamEvent(event)
+        let streamSessionId = sessionID(for: event)
+        if eventBelongsToActiveSession(streamSessionId) {
+            if bufferIfReconciling(event) { return }
+            applyStreamEvent(event)
+            return
+        }
+        if case .unparsed = event { return }
+        messagingStreamRouter?.handleUnboundStreamEvent(event)
     }
 
     private func bufferIfReconciling(_ event: StreamEvent) -> Bool {
@@ -12335,22 +12400,7 @@ final class AppState: ObservableObject {
     }
 
     private func sessionID(for event: StreamEvent) -> String {
-        switch event {
-        case .messageStart(let sessionId), .messageDelta(let sessionId, _),
-                .reasoningDelta(let sessionId, _),
-                .messageComplete(let sessionId, _, _, _), .messageError(let sessionId, _),
-                .messageInterrupted(let sessionId), .sessionBusy(let sessionId, _),
-                .sessionInfo(let sessionId, _), .sessionTitle(let sessionId, _, _),
-                .toolStart(let sessionId, _, _),
-                .toolComplete(let sessionId, _, _), .reviewSummary(let sessionId, _), .clarify(let sessionId, _), .clarifyExpire(let sessionId, _),
-                .approval(let sessionId, _),
-                .contextUpdate(let sessionId, _, _, _), .cwdUpdate(let sessionId, _),
-                .modelUpdate(let sessionId, _, _), .agentCount(let sessionId, _),
-                .delegateAgent(let sessionId, _):
-            return sessionId
-        case .unparsed:
-            return ""
-        }
+        event.sessionID
     }
 
     private func eventBelongsToActiveSession(_ sessionId: String) -> Bool {
@@ -12478,13 +12528,52 @@ final class AppState: ObservableObject {
             settleReasoningSegmentIntoTranscript()
             resetReasoningSegment()
             flushStreamingPartial()
-            messages.append(ChatMessage(
-                id: "tool-start-\(Date().timeIntervalSince1970)",
-                role: .tool,
-                content: "",
-                timestamp: Self.localTimestamp(),
-                tool: ToolActivity(id: nil, name: name, input: input, output: nil, status: .running)
-            ))
+            if let index = messages.lastIndex(where: {
+                $0.role == .tool && $0.tool?.name == name && $0.tool?.status == .running
+            }) {
+                let existing = messages[index].tool
+                messages[index].tool = ToolActivity(
+                    id: existing?.id,
+                    name: name,
+                    input: Self.mergeToolInput(existing: existing?.input, incoming: input, replace: true),
+                    output: existing?.output,
+                    status: .running
+                )
+            } else {
+                messages.append(ChatMessage(
+                    id: "tool-start-\(Date().timeIntervalSince1970)",
+                    role: .tool,
+                    content: "",
+                    timestamp: Self.localTimestamp(),
+                    tool: ToolActivity(id: nil, name: name, input: input, output: nil, status: .running)
+                ))
+            }
+
+        case .toolDelta(_, let name, let input, let replace):
+            if name.lowercased() == "clarify" { break }
+            settleReasoningSegmentIntoTranscript()
+            resetReasoningSegment()
+            flushStreamingPartial()
+            if let index = messages.lastIndex(where: {
+                $0.role == .tool && $0.tool?.name == name && $0.tool?.status == .running
+            }) {
+                let existing = messages[index].tool
+                messages[index].tool = ToolActivity(
+                    id: existing?.id,
+                    name: name,
+                    input: Self.mergeToolInput(existing: existing?.input, incoming: input, replace: replace),
+                    output: existing?.output,
+                    status: .running
+                )
+            } else {
+                messages.append(ChatMessage(
+                    id: "tool-delta-\(Date().timeIntervalSince1970)",
+                    role: .tool,
+                    content: "",
+                    timestamp: Self.localTimestamp(),
+                    tool: ToolActivity(id: nil, name: name, input: input, output: nil, status: .running)
+                ))
+            }
 
         case .toolComplete(_, let name, let output):
             if name.lowercased() == "clarify" { break }
@@ -12512,6 +12601,31 @@ final class AppState: ObservableObject {
                     content: "",
                     timestamp: Self.localTimestamp(),
                     tool: ToolActivity(id: nil, name: name, input: nil, output: output, status: .complete)
+                ))
+            }
+
+        case .toolFailed(_, let name, let message):
+            if name.lowercased() == "clarify" { break }
+            settleReasoningSegmentIntoTranscript()
+            resetReasoningSegment()
+            if let index = messages.lastIndex(where: {
+                $0.role == .tool && $0.tool?.name == name && $0.tool?.status == .running
+            }) {
+                let existing = messages[index].tool
+                messages[index].tool = ToolActivity(
+                    id: existing?.id,
+                    name: name,
+                    input: existing?.input,
+                    output: message,
+                    status: .failed
+                )
+            } else {
+                messages.append(ChatMessage(
+                    id: "tool-failed-\(Date().timeIntervalSince1970)",
+                    role: .tool,
+                    content: "",
+                    timestamp: Self.localTimestamp(),
+                    tool: ToolActivity(id: nil, name: name, input: nil, output: message, status: .failed)
                 ))
             }
 

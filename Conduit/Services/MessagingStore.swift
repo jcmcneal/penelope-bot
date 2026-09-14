@@ -12,6 +12,7 @@ final class MessagingStore: ObservableObject {
     @Published private(set) var cardDismissed = false
     @Published private(set) var pinnedBotIDs: [String] = []
     @Published private(set) var cachedDisplayProfiles: [MessagingProfile] = []
+    @Published private(set) var liveTurns: [String: MessagingLiveTurn] = [:]
     private(set) var service: MessagingService?
     private(set) var generation = UUID()
     let historyCache = MessagingHistoryCache()
@@ -142,6 +143,7 @@ final class MessagingStore: ObservableObject {
         dismissalScope = scope
         verifiedIdentityScope = nil
         service = requester.map(MessagingService.init)
+        liveTurns = [:]
         capability = nil
         conversations = []
         hasLoadedConversations = false
@@ -427,5 +429,84 @@ final class MessagingStore: ObservableObject {
         guard epoch == generation else { throw MessagingError.staleContext }
         await refreshConversations(force: true)
         return result
+    }
+
+    func liveTurn(for destination: MessagingDestination) -> MessagingLiveTurn? {
+        liveTurns[destination.id]
+    }
+
+    func startLiveTurn(for destination: MessagingDestination, profileID: String?) {
+        liveTurns[destination.id] = MessagingLiveTurn(
+            destinationID: destination.id,
+            profileID: profileID
+        )
+    }
+
+    func syncLiveTurn(for destination: MessagingDestination, history: MessagingHistory?) {
+        guard var turn = liveTurns[destination.id] else {
+            guard let history else { return }
+            let active = history.runs.filter { ["queued", "running"].contains($0.status.lowercased()) }
+            guard !active.isEmpty else { return }
+            var turn = MessagingLiveTurn(
+                destinationID: destination.id,
+                profileID: active.first?.profile ?? destination.profileID
+            )
+            for run in active {
+                if let sessionID = run.sessionID { turn.bindSession(sessionID) }
+                turn.bindProfile(run.profile)
+            }
+            liveTurns[destination.id] = turn
+            return
+        }
+        if let history {
+            for run in history.runs where ["queued", "running"].contains(run.status.lowercased()) {
+                if let sessionID = run.sessionID { turn.bindSession(sessionID) }
+                turn.bindProfile(run.profile)
+            }
+            turn.absorbHistory(history.messages)
+        }
+        liveTurns[destination.id] = turn
+    }
+
+    func clearLiveTurn(for destination: MessagingDestination) {
+        liveTurns[destination.id] = nil
+    }
+}
+
+extension MessagingStore: MessagingStreamRouting {
+    func handleUnboundStreamEvent(_ event: StreamEvent) {
+        guard !liveTurns.isEmpty else { return }
+        if case .unparsed = event { return }
+        let sessionID = event.sessionID
+        if !sessionID.isEmpty, let key = liveTurns.first(where: { $0.value.sessionIDs.contains(sessionID) })?.key {
+            apply(event, to: key)
+            return
+        }
+        let waiting = liveTurns.filter { $0.value.acceptsNewSession }
+        if waiting.count == 1, let key = waiting.keys.first {
+            apply(event, to: key)
+            return
+        }
+        if waiting.count > 1, !sessionID.isEmpty {
+            return
+        }
+        if waiting.isEmpty, liveTurns.count == 1, let key = liveTurns.keys.first,
+           liveTurns[key]?.phase.isActive == true {
+            apply(event, to: key)
+        }
+    }
+
+    func handleStreamDisconnected() {
+        for key in liveTurns.keys {
+            guard var turn = liveTurns[key] else { continue }
+            turn.markDropped()
+            liveTurns[key] = turn
+        }
+    }
+
+    private func apply(_ event: StreamEvent, to key: String) {
+        guard var turn = liveTurns[key] else { return }
+        guard turn.apply(event) else { return }
+        liveTurns[key] = turn
     }
 }
