@@ -142,6 +142,8 @@ enum ResponseHapticPolicy {
             return .activity(playsStart: true)
         case .toolStart(_, let name, _):
             return name.lowercased() == "clarify" ? nil : .tool
+        case .toolFailed:
+            return .failure
         case .delegateAgent(_, let activity):
             return activity.stream.contains { $0.kind == .tool } ? .tool : nil
         case .messageError:

@@ -19,6 +19,10 @@ struct MessagingTranscriptProjection {
     private var profiles: [MessagingProfile] = []
     private static let timestampFormatter = ISO8601DateFormatter()
 
+    static func timestampString(for epoch: Double) -> String {
+        timestampFormatter.string(from: Date(timeIntervalSince1970: epoch))
+    }
+
     /// Retains prepared messages across appends and edits, and drops entries removed by refresh.
     /// Profile changes also invalidate mention display names embedded in message content.
     @discardableResult
