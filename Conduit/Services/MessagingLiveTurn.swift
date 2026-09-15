@@ -74,6 +74,9 @@ struct MessagingLiveTurn: Equatable {
                 sessionIDs.formUnion(incoming)
             } else if sessionIDs.isDisjoint(with: incoming) {
                 guard phase.isActive else { return false }
+                // History and live WS may name the same text turn with two ids.
+                // Another session's tools are not that turn.
+                if Self.isToolEvent(event) { return false }
                 sessionIDs.formUnion(incoming)
             } else {
                 sessionIDs.formUnion(incoming)
@@ -92,8 +95,11 @@ struct MessagingLiveTurn: Equatable {
             reasoning += delta
             if phase == .starting { phase = .streaming }
         case .messageComplete(_, _, let content, let reasoning):
-            if let content, content.count >= text.count {
-                text = content
+            if let content {
+                let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    text = content
+                }
             }
             if let reasoning, !reasoning.isEmpty {
                 self.reasoning = reasoning
@@ -135,18 +141,22 @@ struct MessagingLiveTurn: Equatable {
         return true
     }
 
+    /// Durable history is the product. Overlay text that diverged (aliased
+    /// tokens, a shorter complete, a dropped stream) must not keep the spinner.
     mutating func absorbHistory(_ messages: [MessagingMessage]) {
-        let assistants = messages.filter { $0.author != "user" }
-        guard let latest = assistants.last else { return }
-        bindProfile(latest.author)
-        let body = latest.body
-        guard !body.isEmpty else { return }
-        if body == text || body.hasPrefix(text) || (!text.isEmpty && text.hasPrefix(body)) {
-            text = body
-            settledTextInHistory = true
-            if !tools.contains(where: { $0.status == .running }) {
-                phase = .completing
-            }
+        guard let settled = MessagingTurnHistory.completedAssistant(in: messages) else { return }
+        bindProfile(settled.author)
+        text = settled.body
+        settledTextInHistory = true
+        errorMessage = nil
+        tools.removeAll()
+        phase = .completing
+    }
+
+    static func isToolEvent(_ event: StreamEvent) -> Bool {
+        switch event {
+        case .toolStart, .toolDelta, .toolComplete, .toolFailed: return true
+        default: return false
         }
     }
 
@@ -210,6 +220,22 @@ struct MessagingLiveTurn: Equatable {
     static func normalizedSessionID(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+enum MessagingTurnHistory {
+    /// The bot reply for the latest user turn, if history already has it.
+    static func completedAssistant(in messages: [MessagingMessage]) -> (author: String, body: String)? {
+        let window: ArraySlice<MessagingMessage>
+        if let userIndex = messages.lastIndex(where: { $0.author == "user" }) {
+            window = messages.suffix(from: userIndex + 1)
+        } else {
+            window = messages[messages.startIndex...]
+        }
+        guard let assistant = window.last(where: { $0.author != "user" }) else { return nil }
+        let body = assistant.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return nil }
+        return (assistant.author, assistant.body)
     }
 }
 

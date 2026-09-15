@@ -232,6 +232,10 @@ final class MessagingConversationStore: ObservableObject {
         guard awaitingReply else { return }
         if !MessagingRunPresence.collapsed(history?.runs ?? []).isEmpty {
             clearAwaitingReply()
+            return
+        }
+        if MessagingTurnHistory.completedAssistant(in: history?.messages ?? []) != nil {
+            clearAwaitingReply()
         }
     }
 

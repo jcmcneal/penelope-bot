@@ -475,9 +475,12 @@ final class MessagingStore: ObservableObject {
     }
 
     private func shouldDrop(_ turn: MessagingLiveTurn, activeRuns: [MessagingRun]) -> Bool {
+        if turn.settledTextInHistory {
+            return activeRuns.isEmpty && !turn.tools.contains(where: { $0.status == .running })
+        }
         if turn.phase.isActive { return false }
         if turn.tools.contains(where: { $0.status == .running }) { return false }
-        return activeRuns.isEmpty && (turn.settledTextInHistory || turn.text.isEmpty)
+        return activeRuns.isEmpty && turn.text.isEmpty
     }
 
     func clearLiveTurn(for destination: MessagingDestination) {
