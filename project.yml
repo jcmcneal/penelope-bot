@@ -17,7 +17,7 @@ settings:
     DEVELOPMENT_TEAM: WWP5F4M4AR
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "200"
+    CURRENT_PROJECT_VERSION: "202"
 targets:
   Conduit:
     type: application
