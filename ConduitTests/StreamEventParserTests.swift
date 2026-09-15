@@ -685,4 +685,29 @@ final class StreamEventParserTests: XCTestCase {
             XCTFail("Missing type should produce unparsed")
         }
     }
+
+    func testMessagingRunStart() {
+        let event = parse(#"""
+        {"type": "messaging.run.start", "session_id": "live-sid", "conversation_id": "c1", "run_id": "r1", "profile_id": "swe-id"}
+        """#)
+        guard case .messagingRunStart(let sessionId) = event else {
+            return XCTFail("Expected messagingRunStart, got \(String(describing: event))")
+        }
+        XCTAssertEqual(sessionId, "live-sid")
+    }
+
+    func testJoinKeyPrefersTopLevelIds() {
+        let params = AnyCodable.from([
+            "type": "message.delta",
+            "session_id": "s1",
+            "conversation_id": "c-top",
+            "run_id": "r-top",
+            "profile_id": "swe-id",
+            "payload": ["text": "Hi", "conversation_id": "c-payload"]
+        ] as [String: Any])
+        let join = StreamJoinKey.parse(params: params)
+        XCTAssertEqual(join.conversationID, "c-top")
+        XCTAssertEqual(join.runID, "r-top")
+        XCTAssertEqual(join.profileID, "swe-id")
+    }
 }

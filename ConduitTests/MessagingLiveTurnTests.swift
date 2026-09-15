@@ -116,7 +116,10 @@ final class MessagingStreamRoutingTests: XCTestCase {
         let store = MessagingStore()
         let destination = MessagingDestination(conversationID: nil, profileID: "swe-id")
         store.startLiveTurn(for: destination, profileID: "swe-id")
-        store.handleUnboundStreamEvent(.messageDelta(sessionId: "hidden-sess", text: "Grok-fast"))
+        store.handleUnboundStreamEvent(
+            .messageDelta(sessionId: "hidden-sess", text: "Grok-fast"),
+            join: StreamJoinKey(profileID: "swe-id")
+        )
         XCTAssertEqual(store.liveTurn(for: destination)?.text, "Grok-fast")
         XCTAssertEqual(store.liveTurn(for: destination)?.sessionIDs, ["hidden-sess"])
     }
@@ -125,7 +128,10 @@ final class MessagingStreamRoutingTests: XCTestCase {
         let store = MessagingStore()
         let destination = MessagingDestination(conversationID: nil, profileID: "swe-id")
         store.startLiveTurn(for: destination, profileID: "swe-id")
-        store.handleUnboundStreamEvent(.messageDelta(sessionId: "s", text: "partial"))
+        store.handleUnboundStreamEvent(
+            .messageDelta(sessionId: "s", text: "partial"),
+            join: StreamJoinKey(profileID: "swe-id")
+        )
         store.handleStreamDisconnected()
         XCTAssertEqual(store.liveTurn(for: destination)?.phase, .interrupted)
         XCTAssertEqual(store.liveTurn(for: destination)?.text, "partial")
@@ -148,16 +154,20 @@ final class MessagingStreamRoutingTests: XCTestCase {
         )
         XCTAssertEqual(store.liveTurn(for: destination)?.sessionIDs, ["id-from-history"])
 
-        store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "Hel"))
+        let join = StreamJoinKey(conversationID: "c1", runID: "run-1", profileID: "swe-id")
+        store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "Hel"), join: join)
         store.handleUnboundStreamEvent(
-            .toolStart(sessionId: "id-from-ws", toolName: "web_search", toolInput: "q=")
+            .toolStart(sessionId: "id-from-ws", toolName: "web_search", toolInput: "q="),
+            join: join
         )
         store.handleUnboundStreamEvent(
-            .toolComplete(sessionId: "id-from-ws", toolName: "web_search", toolOutput: "sun")
+            .toolComplete(sessionId: "id-from-ws", toolName: "web_search", toolOutput: "sun"),
+            join: join
         )
-        store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "lo"))
+        store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "lo"), join: join)
         store.handleUnboundStreamEvent(
-            .messageComplete(sessionId: "id-from-ws", messageId: "m1", content: "Hello", reasoning: nil)
+            .messageComplete(sessionId: "id-from-ws", messageId: "m1", content: "Hello", reasoning: nil),
+            join: join
         )
 
         let turn = store.liveTurn(for: destination)
@@ -209,7 +219,7 @@ final class MessagingStreamRoutingTests: XCTestCase {
         XCTAssertEqual(store.liveTurn(for: designer)?.sessionIDs, ["stored-des"])
     }
 
-    func testMismatchedSidAliasesOntoTheOnlyActiveTurn() {
+    func testMismatchedSidDoesNotAliasOntoTheOnlyActiveTurn() {
         let store = MessagingStore()
         let swe = MessagingDestination(conversationID: nil, profileID: "swe-id")
         let designer = MessagingDestination(conversationID: nil, profileID: "designer-id")
@@ -224,10 +234,183 @@ final class MessagingStreamRoutingTests: XCTestCase {
 
         store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "live"))
 
-        XCTAssertEqual(store.liveTurn(for: swe)?.text, "live")
-        XCTAssertEqual(store.liveTurn(for: swe)?.sessionIDs, ["stored-swe", "id-from-ws"])
+        XCTAssertEqual(store.liveTurn(for: swe)?.text, "")
+        XCTAssertEqual(store.liveTurn(for: swe)?.sessionIDs, ["stored-swe"])
         XCTAssertEqual(store.liveTurn(for: designer)?.text, "")
         XCTAssertEqual(store.liveTurn(for: designer)?.phase, .interrupted)
+    }
+
+    func testConversationJoinKeyRoutesAmongTwoLiveTurns() {
+        let store = MessagingStore()
+        let swe = MessagingDestination(conversationID: "c-swe", profileID: nil)
+        let designer = MessagingDestination(conversationID: "c-des", profileID: nil)
+        store.startLiveTurn(for: swe, profileID: "swe-id")
+        store.startLiveTurn(for: designer, profileID: "designer-id")
+
+        store.handleUnboundStreamEvent(
+            .messageDelta(sessionId: "runtime-unknown", text: "ours"),
+            join: StreamJoinKey(conversationID: "c-swe", runID: "run-swe")
+        )
+
+        XCTAssertEqual(store.liveTurn(for: swe)?.text, "ours")
+        XCTAssertEqual(store.liveTurn(for: swe)?.sessionIDs, ["runtime-unknown"])
+        XCTAssertEqual(store.liveTurn(for: designer)?.text, "")
+        XCTAssertEqual(store.liveTurn(for: designer)?.sessionIDs ?? [], [])
+    }
+
+    func testMessagingRunStartBindsOpaqueSessionThenTokensFollow() {
+        let store = MessagingStore()
+        let destination = MessagingDestination(conversationID: nil, profileID: "swe-id")
+        store.startLiveTurn(for: destination, profileID: "swe-id")
+        let join = StreamJoinKey(conversationID: "c1", runID: "run-1", profileID: "swe-id")
+
+        store.handleUnboundStreamEvent(.messagingRunStart(sessionId: "id-from-ws"), join: join)
+        store.handleUnboundStreamEvent(.messageDelta(sessionId: "id-from-ws", text: "Hel"))
+
+        let turn = store.liveTurn(for: destination)
+        XCTAssertEqual(turn?.text, "Hel")
+        XCTAssertEqual(turn?.sessionIDs, ["id-from-ws"])
+        XCTAssertEqual(turn?.conversationID, "c1")
+        XCTAssertEqual(turn?.runID, "run-1")
+    }
+
+    func testForeignToolDoesNotAttachToABoundTextTurn() {
+        var turn = MessagingLiveTurn(destinationID: "dm:default", profileID: "default")
+        _ = turn.apply(.messageDelta(sessionId: "5e933ea7", text: "Yeah"))
+        XCTAssertFalse(turn.apply(.toolStart(sessionId: "6cea0e91", toolName: "team_inbox", toolInput: "inbox")))
+        XCTAssertTrue(turn.tools.isEmpty)
+        XCTAssertEqual(turn.text, "Yeah")
+        XCTAssertEqual(turn.sessionIDs, ["5e933ea7"])
+    }
+
+    func testMessageCompleteReplacesLongerDivergedOverlayText() {
+        var turn = MessagingLiveTurn(destinationID: "dm:default", profileID: "default")
+        _ = turn.apply(.messageDelta(sessionId: "6cea0e91", text: String(repeating: "x", count: 200)))
+        _ = turn.apply(.messageComplete(
+            sessionId: "5e933ea7",
+            messageId: "64789",
+            content: Self.hermesReply,
+            reasoning: nil
+        ))
+        XCTAssertEqual(turn.text, Self.hermesReply)
+    }
+
+    func testScrambledOverlayLosesToTheSavedAssistant() {
+        var turn = MessagingLiveTurn(destinationID: "dm:default", profileID: "default")
+        _ = turn.apply(.toolStart(sessionId: "6cea0e91", toolName: "team_inbox", toolInput: nil))
+        _ = turn.apply(.messageDelta(sessionId: "6cea0e91", text: String(repeating: "x", count: 200)))
+        turn.markDropped()
+        turn.absorbHistory(Self.frustratingTurnHistory.messages)
+        XCTAssertEqual(turn.text, Self.hermesReply)
+        XCTAssertTrue(turn.settledTextInHistory)
+        XCTAssertTrue(turn.tools.isEmpty)
+        XCTAssertNil(turn.errorMessage)
+        XCTAssertFalse(turn.showsStreamingText)
+    }
+
+    func testBusyGatewayEventsDoNotBlockTheSavedReply() {
+        let store = MessagingStore()
+        let destination = MessagingDestination(
+            conversationID: "06492b61-7bda-43ca-b754-c702335cbee2",
+            profileID: "a454f9edec9d5de0b6560bb155803bf2"
+        )
+        store.startLiveTurn(for: destination, profileID: "a454f9edec9d5de0b6560bb155803bf2")
+
+        // Night of 2026-09-14: other plugin sessions were tool-flooding /api/ws
+        // with no join keys. PR #10 aliased those onto this overlay.
+        store.handleUnboundStreamEvent(.toolStart(sessionId: "6cea0e91", toolName: "team_inbox", toolInput: nil))
+        store.handleUnboundStreamEvent(.toolStart(sessionId: "a87696c3", toolName: "tool_describe", toolInput: nil))
+        store.handleUnboundStreamEvent(.toolStart(sessionId: "d4a959b6", toolName: "read_file", toolInput: nil))
+        store.handleUnboundStreamEvent(.messageDelta(sessionId: "6cea0e91", text: "Workflow report for peer pm"))
+        store.handleUnboundStreamEvent(.messageComplete(
+            sessionId: "5e933ea7",
+            messageId: "64789",
+            content: Self.hermesReply,
+            reasoning: nil
+        ))
+        store.handleStreamDisconnected()
+
+        XCTAssertEqual(store.liveTurn(for: destination)?.tools ?? [], [])
+        XCTAssertNotEqual(store.liveTurn(for: destination)?.text, Self.hermesReply)
+
+        store.syncLiveTurn(for: destination, history: Self.frustratingTurnHistory)
+        XCTAssertNil(store.liveTurn(for: destination), "history has the reply; overlay and spinner must go")
+    }
+
+    func testBoundRuntimeSidKeepsTheRealCompleteAndDropsForeignTools() {
+        let store = MessagingStore()
+        let destination = MessagingDestination(
+            conversationID: "06492b61-7bda-43ca-b754-c702335cbee2",
+            profileID: "a454f9edec9d5de0b6560bb155803bf2"
+        )
+        store.startLiveTurn(for: destination, profileID: "a454f9edec9d5de0b6560bb155803bf2")
+        store.syncLiveTurn(
+            for: destination,
+            history: messagingHistory(
+                id: "06492b61-7bda-43ca-b754-c702335cbee2",
+                profile: "a454f9edec9d5de0b6560bb155803bf2",
+                runSessionID: "5e933ea7"
+            )
+        )
+
+        store.handleUnboundStreamEvent(.toolStart(sessionId: "6cea0e91", toolName: "team_inbox", toolInput: nil))
+        store.handleUnboundStreamEvent(.messageComplete(
+            sessionId: "5e933ea7",
+            messageId: "64789",
+            content: Self.hermesReply,
+            reasoning: nil
+        ))
+
+        XCTAssertEqual(store.liveTurn(for: destination)?.text, Self.hermesReply)
+        XCTAssertEqual(store.liveTurn(for: destination)?.tools ?? [], [])
+
+        store.syncLiveTurn(for: destination, history: Self.frustratingTurnHistory)
+        XCTAssertNil(store.liveTurn(for: destination))
+    }
+}
+
+private extension MessagingStreamRoutingTests {
+    static let hermesReply = """
+        Yeah — the gap between what you meant and what it actually did is the part that wears you down.
+
+        @a454f9edec9d5de0b6560bb155803bf2
+        """
+
+    static var frustratingTurnHistory: MessagingHistory {
+        MessagingHistory(
+            conversation: MessagingConversation(
+                id: "06492b61-7bda-43ca-b754-c702335cbee2",
+                kind: "dm",
+                title: "default",
+                profiles: ["a454f9edec9d5de0b6560bb155803bf2"],
+                defaultResponder: "a454f9edec9d5de0b6560bb155803bf2",
+                revision: 1,
+                preview: "",
+                updatedAt: 1,
+                unread: 0,
+                archived: false,
+                pinned: false,
+                muted: false
+            ),
+            messages: [
+                MessagingMessage(
+                    id: "f507fac0-f7b2-4ff1-b3fe-fe62c37c0543",
+                    sequence: 19,
+                    author: "user",
+                    body: "AI is frustrating",
+                    createdAt: 1
+                ),
+                MessagingMessage(
+                    id: "c30549e6-450d-44ae-a9b7-a717f812bf28",
+                    sequence: 20,
+                    author: "a454f9edec9d5de0b6560bb155803bf2",
+                    body: hermesReply,
+                    createdAt: 2
+                )
+            ],
+            runs: [],
+            before: nil
+        )
     }
 }
 
