@@ -18,6 +18,9 @@ on:
         required: false
         default: ""
   push:
+    branches:
+      # Merging into `deploy` archives and uploads a TestFlight build.
+      - deploy
     tags:
       - "ios/v*"
 
@@ -88,11 +91,36 @@ jobs:
           echo "API_KEY_PATH=${HOME}/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8" \
             >> "${GITHUB_ENV}"
 
-      - name: Apply optional version overrides
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+      - name: Resolve version overrides
+        id: versions
         env:
-          MARKETING_VERSION: ${{ inputs.marketing_version }}
-          BUILD_NUMBER: ${{ inputs.build_number }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          # `inputs` is only populated for workflow_dispatch; use event.inputs
+          # so push-to-deploy runs still evaluate cleanly.
+          INPUT_MARKETING_VERSION: ${{ github.event.inputs.marketing_version || '' }}
+          INPUT_BUILD_NUMBER: ${{ github.event.inputs.build_number || '' }}
+        run: |
+          set -euo pipefail
+          marketing="${INPUT_MARKETING_VERSION:-}"
+          build="${INPUT_BUILD_NUMBER:-}"
+          # Deploy-branch uploads must not reuse an already-accepted App Store
+          # build number. Stamp a monotonic UTC YYYYMMDDHHMM when the caller
+          # did not pin one (workflow_dispatch can still override explicitly).
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" = "deploy" ] && [ -z "$build" ]; then
+            build="$(date -u +%Y%m%d%H%M)"
+            echo "Deploy push: assigning CURRENT_PROJECT_VERSION=${build}"
+          fi
+          {
+            echo "marketing_version=${marketing}"
+            echo "build_number=${build}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Apply version overrides
+        if: ${{ steps.versions.outputs.marketing_version != '' || steps.versions.outputs.build_number != '' }}
+        env:
+          MARKETING_VERSION: ${{ steps.versions.outputs.marketing_version }}
+          BUILD_NUMBER: ${{ steps.versions.outputs.build_number }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -122,10 +150,7 @@ jobs:
               if n != 1:
                   raise SystemExit("Failed to patch CURRENT_PROJECT_VERSION in project.yml")
               print(f"CURRENT_PROJECT_VERSION -> {build}")
-          if marketing or build:
-              path.write_text(text)
-          else:
-              print("No version overrides; using project.yml as-is")
+          path.write_text(text)
           PY
 
       - name: Generate Xcode project

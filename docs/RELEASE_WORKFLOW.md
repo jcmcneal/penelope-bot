@@ -1,15 +1,32 @@
 # iOS Release Workflow
 
-Conduit uses `main` for ongoing development and a short-lived release branch for each TestFlight/App Store candidate. The release branch is the controlled snapshot that gets tested and shipped while unrelated work continues on `main`.
+Conduit uses `main` for ongoing development, a long-lived `deploy` branch for TestFlight uploads, and optional short-lived release branches/tags for App Store candidates.
 
 ## Branch and PR model
 
 - `main` is the development source of truth.
-- `release/<marketing-version>` is cut from a known `main` commit for one release candidate.
+- `deploy` is the TestFlight ship branch. Any push/merge to `deploy` runs `.github/workflows/testflight.yml` (archive + App Store Connect upload).
+- `release/<marketing-version>` is optional: cut from a known `main` commit when you need a frozen App Store candidate with an audit PR.
 - A release PR targets `main` and stays open as the audit trail for that candidate. Keep it draft while the candidate is still being tested; mark it ready only after final QA.
-- Do not merge unrelated `main` work into the release branch. Only backport fixes that are required for that release.
+- Do not merge unrelated `main` work into a release branch. Only backport fixes that are required for that release.
 
 The release branch must not be reused for the next release. After shipping, keep the release tag and start a new release branch from the latest `main`.
+
+## Day-to-day TestFlight (`deploy`)
+
+Ship a build that is already on `main`:
+
+```bash
+git fetch origin
+git switch deploy
+git pull --ff-only origin deploy
+git merge --ff-only origin/main   # or open a PR: main → deploy
+git push origin deploy
+```
+
+That push triggers the TestFlight workflow. Marketing version still comes from `project.yml` on the commit being shipped. Build number is assigned automatically for `deploy` pushes (UTC `YYYYMMDDHHMM`) so App Store Connect never sees a reused `CURRENT_PROJECT_VERSION`. You can still pin versions via `workflow_dispatch` inputs or an `ios/v*` tag.
+
+Prefer merging `main` into `deploy` (fast-forward when possible) over committing directly on `deploy`, so `deploy` stays a ship pointer rather than a second development line.
 
 ## 1. Cut a release candidate
 

@@ -82,7 +82,7 @@ Select your team in Signing & Capabilities, then build and run on your device.
 
 ## Releasing
 
-See [the iOS release workflow](docs/RELEASE_WORKFLOW.md) for the TestFlight and App Store release process.
+Merge (or fast-forward) `main` into `deploy` to kick off TestFlight CI. See [the iOS release workflow](docs/RELEASE_WORKFLOW.md) for TestFlight and App Store details.
 
 ## Architecture
 
