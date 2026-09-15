@@ -1,5 +1,37 @@
 import Foundation
 
+/// Join keys stamped on bot-coms plugin turns so an unbound `/api/ws`
+/// firehose can bind tokens to the right overlay without guessing.
+struct StreamJoinKey: Equatable, Sendable {
+    var conversationID: String? = nil
+    var runID: String? = nil
+    var profileID: String? = nil
+
+    static let none = StreamJoinKey()
+
+    var isEmpty: Bool {
+        conversationID == nil && runID == nil && profileID == nil
+    }
+
+    static func parse(params: AnyCodable) -> StreamJoinKey {
+        let obj = params.objectValue
+        let payload = obj?["payload"]?.objectValue
+        return StreamJoinKey(
+            conversationID: nonempty(obj?["conversation_id"]?.stringValue)
+                ?? nonempty(payload?["conversation_id"]?.stringValue),
+            runID: nonempty(obj?["run_id"]?.stringValue)
+                ?? nonempty(payload?["run_id"]?.stringValue),
+            profileID: nonempty(obj?["profile_id"]?.stringValue)
+                ?? nonempty(payload?["profile_id"]?.stringValue)
+        )
+    }
+
+    private static func nonempty(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 /// Pure-function stream event parser extracted from HermesClient so the
 /// gateway-to-app boundary can be unit-tested without a live WebSocket.
 enum StreamEventParser {
@@ -152,6 +184,9 @@ enum StreamEventParser {
             guard let payload else { return nil }
             let activity = Self.delegateAgentActivity(from: payload, eventType: eventType)
             return .delegateAgent(sessionId: sessionId, activity: activity)
+
+        case "messaging.run.start":
+            return .messagingRunStart(sessionId: sessionId)
 
         default:
             return .unparsed(payload: obj.mapValues { $0.anyValue })

@@ -247,7 +247,7 @@ struct MessagingConversationView: View {
                     .accessibilityIdentifier("messaging.optimistic-pending")
                 }
 
-                if let turn = liveTurn {
+                if let turn = liveTurn, showsLiveTurnOverlay {
                     liveTurnChrome(turn)
                 }
 

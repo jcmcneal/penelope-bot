@@ -191,6 +191,8 @@ enum StreamEvent {
     case modelUpdate(sessionId: String, model: String, provider: String)
     case agentCount(sessionId: String, count: Int)
     case delegateAgent(sessionId: String, activity: DelegateAgentActivity)
+    /// Bind a bot overlay to the conversation/run join keys before tokens arrive.
+    case messagingRunStart(sessionId: String)
     case unparsed(payload: [String: Any])
 
     var sessionID: String {
@@ -206,7 +208,7 @@ enum StreamEvent {
                 .clarifyExpire(let sessionId, _), .approval(let sessionId, _),
                 .contextUpdate(let sessionId, _, _, _), .cwdUpdate(let sessionId, _),
                 .modelUpdate(let sessionId, _, _), .agentCount(let sessionId, _),
-                .delegateAgent(let sessionId, _):
+                .delegateAgent(let sessionId, _), .messagingRunStart(let sessionId):
             return sessionId
         case .unparsed:
             return ""
@@ -539,7 +541,7 @@ final class HermesClient: ObservableObject {
     let cloudflareAccess: CloudflareAccessCredentials?
 
     // Callback for stream events (set by AppState)
-    var onEvent: ((StreamEvent) -> Void)?
+    var onEvent: ((StreamEvent, StreamJoinKey) -> Void)?
     var onDisconnected: (() -> Void)?
 
     static let requestTimeout: TimeInterval = 30
@@ -766,7 +768,7 @@ final class HermesClient: ObservableObject {
 
     private func handleStreamEvent(params: AnyCodable) {
         if let event = StreamEventParser.parse(params: params) {
-            onEvent?(event)
+            onEvent?(event, StreamJoinKey.parse(params: params))
         }
     }
 
