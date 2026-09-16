@@ -140,6 +140,7 @@ final class MessagingConversationStore: ObservableObject {
             pendingDelivery = .failed
             owner.markLiveTurnFailed(for: destination, message: detail ?? "Message not delivered.")
             clearAwaitingReply()
+            clearSendCooldown()
             record(DashboardTicketBridgeError.http(status: status, detail: detail))
         } catch {
             if epoch == owner.generation {
@@ -245,6 +246,12 @@ final class MessagingConversationStore: ObservableObject {
             guard let self, !Task.isCancelled else { return }
             self.sendCooldownActive = false
         }
+    }
+
+    private func clearSendCooldown() {
+        sendCooldownActive = false
+        sendCooldownTask?.cancel()
+        sendCooldownTask = nil
     }
 
     private func clearFailedPending() {
