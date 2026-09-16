@@ -119,7 +119,8 @@ final class MessagingConversationStore: ObservableObject {
         defaults.set(try? JSONEncoder().encode(value), forKey: draftKey + ".pending")
         owner.startLiveTurn(
             for: destination,
-            profileID: destination.profileID ?? recipients.first
+            profileID: destination.profileID ?? recipients.first,
+            clientTurnID: value.id
         )
         beginAwaitingReply()
         beginSendCooldown()
@@ -203,6 +204,12 @@ final class MessagingConversationStore: ObservableObject {
             await load(); await owner.refreshConversations(force: true)
         } catch { record(error) }
     }
+    func retryLostTurn() async {
+        owner.retryLostTurn(for: destination)
+        prefersUrgentPolling = true
+        await load()
+    }
+
     func cancelRun(_ id: String) async {
         guard canWrite, let service = owner.service else { return }
         struct Receipt: Decodable { let ok: Bool }

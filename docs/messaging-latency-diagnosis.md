@@ -146,6 +146,25 @@ Do **not** bring back unkeyed alias-to-only-turn.
 
 ---
 
+## 7. BACKGROUND → RESUME (implemented 2026-09-15)
+
+**PR:** `messaging-background-resume` — see `docs/messaging-background-resume-architecture.md`.
+
+| Item | Status |
+|---|---|
+| Transport interrupt ≠ turn failure (`markTransportInterrupted` / `markTurnLost`) | **Implemented** |
+| Lifecycle overlays (`APP_BACKGROUND`, `RESUME_SYNC`, `RECONNECTING`, `TURN_LOST`) | **Implemented** |
+| Soft reconnect on assistant shell (~800ms) | **Implemented** |
+| Stable `clientTurnID` on send | **Implemented** (`PendingMessagingSend.id`) |
+| Connected chrome = gateway session (`messagingGatewaySessionValid`) | **Implemented** |
+| Scene-phase hooks + urgent resume sync timers | **Implemented** |
+| TOOL_APPROVAL deep restore beyond same-turn | **Out of scope** (probe 8 follow-up) |
+| ConnectionSetup flake fixes | **Out of scope** |
+
+**Remaining risks:** loss budget may declare `TURN_LOST` early on very slow gateways; probe 8 (tool approval sheet restore) needs follow-up PR.
+
+---
+
 ## Access note for parent
 
 - **Cursor CLI on iMac:** not executed — this subagent cannot reach machineId `0d03658b-…` (`ListMachines` / `cursor` MCP unavailable; Shell+machineId runs on box).  

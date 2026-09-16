@@ -51,7 +51,7 @@ final class MessagingLiveTurnTests: XCTestCase {
     func testInactiveTurnIgnoresAnUnseenSessionId() {
         var turn = MessagingLiveTurn(destinationID: "dm:swe", profileID: "swe-id")
         _ = turn.apply(.messageDelta(sessionId: "ours", text: "Hi"))
-        turn.markDropped()
+        _ = turn.apply(.messageInterrupted(sessionId: "ours"))
         XCTAssertFalse(turn.apply(.messageDelta(sessionId: "other", text: "leak")))
         XCTAssertEqual(turn.text, "Hi")
     }
@@ -75,14 +75,15 @@ final class MessagingLiveTurnTests: XCTestCase {
         XCTAssertEqual(turn.phase, .completing)
     }
 
-    func testDroppedStreamKeepsPartialText() {
+    func testTransportInterruptKeepsPartialTextWithoutDropCopy() {
         var turn = MessagingLiveTurn(destinationID: "dm:swe", profileID: "swe-id")
         _ = turn.apply(.messageDelta(sessionId: "s", text: "half"))
         _ = turn.apply(.toolStart(sessionId: "s", toolName: "read", toolInput: "file"))
-        turn.markDropped()
-        XCTAssertEqual(turn.phase, .interrupted)
+        turn.markTransportInterrupted()
+        XCTAssertEqual(turn.phase, .usingTool)
         XCTAssertEqual(turn.text, "half")
-        XCTAssertEqual(turn.tools.first?.status, .failed)
+        XCTAssertEqual(turn.tools.first?.status, .running)
+        XCTAssertNil(turn.errorMessage)
     }
 
     func testRunSessionIdIsOptional() throws {
@@ -124,7 +125,7 @@ final class MessagingStreamRoutingTests: XCTestCase {
         XCTAssertEqual(store.liveTurn(for: destination)?.sessionIDs, ["hidden-sess"])
     }
 
-    func testDisconnectMarksTheLiveTurnInterrupted() {
+    func testDisconnectDoesNotMarkTransportInterruptAsTurnFailure() {
         let store = MessagingStore()
         let destination = MessagingDestination(conversationID: nil, profileID: "swe-id")
         store.startLiveTurn(for: destination, profileID: "swe-id")
@@ -132,9 +133,12 @@ final class MessagingStreamRoutingTests: XCTestCase {
             .messageDelta(sessionId: "s", text: "partial"),
             join: StreamJoinKey(profileID: "swe-id")
         )
-        store.handleStreamDisconnected()
-        XCTAssertEqual(store.liveTurn(for: destination)?.phase, .interrupted)
-        XCTAssertEqual(store.liveTurn(for: destination)?.text, "partial")
+        store.handleStreamDisconnected(reason: .background)
+        let turn = store.liveTurn(for: destination)
+        XCTAssertEqual(turn?.phase, .streaming)
+        XCTAssertEqual(turn?.text, "partial")
+        XCTAssertNil(turn?.errorMessage)
+        XCTAssertEqual(turn?.lifecycleOverlay, .appBackground)
     }
 
     func testRunsWithoutSessionIdDoNotMintALiveTurn() {
@@ -357,7 +361,7 @@ final class MessagingStreamRoutingTests: XCTestCase {
         var turn = MessagingLiveTurn(destinationID: "dm:default", profileID: "default")
         _ = turn.apply(.toolStart(sessionId: "6cea0e91", toolName: "team_inbox", toolInput: nil))
         _ = turn.apply(.messageDelta(sessionId: "6cea0e91", text: String(repeating: "x", count: 200)))
-        turn.markDropped()
+        turn.markTransportInterrupted()
         turn.absorbHistory(Self.frustratingTurnHistory.messages)
         XCTAssertEqual(turn.text, Self.hermesReply)
         XCTAssertTrue(turn.settledTextInHistory)
@@ -386,7 +390,7 @@ final class MessagingStreamRoutingTests: XCTestCase {
             content: Self.hermesReply,
             reasoning: nil
         ))
-        store.handleStreamDisconnected()
+        store.handleStreamDisconnected(reason: .foregroundTransport)
 
         XCTAssertEqual(store.liveTurn(for: destination)?.tools ?? [], [])
         XCTAssertNotEqual(store.liveTurn(for: destination)?.text, Self.hermesReply)

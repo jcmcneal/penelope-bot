@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// In-flight bot reply projected into a messaging thread: tokens, tool cards,
 /// and failure/interrupt state. Durable history still wins once the public
@@ -21,6 +22,8 @@ struct MessagingLiveTurn: Equatable {
     }
 
     var destinationID: String
+    /// Stable key for one user send ↔ one assistant bubble across background.
+    var clientTurnID: String
     var profileID: String?
     var conversationID: String?
     var runID: String?
@@ -30,9 +33,38 @@ struct MessagingLiveTurn: Equatable {
     var tools: [ToolActivity] = []
     var phase: Phase = .starting
     var errorMessage: String?
+    var lifecycleOverlay: MessagingLifecycleOverlay?
+    /// Armed by the resume loss budget; evaluated on the next history sync.
+    var resumeSyncLossDue = false
     /// True once a durable assistant message covers `text`, so the streaming
     /// bubble can hide without dropping live tool cards.
     var settledTextInHistory = false
+
+    init(
+        destinationID: String,
+        clientTurnID: String = UUID().uuidString,
+        profileID: String? = nil,
+        conversationID: String? = nil
+    ) {
+        self.destinationID = destinationID
+        self.clientTurnID = clientTurnID
+        self.profileID = profileID
+        self.conversationID = conversationID
+    }
+
+    var showsSoftReconnectChrome: Bool {
+        lifecycleOverlay == .reconnecting
+    }
+
+    var showsTurnLostChrome: Bool {
+        lifecycleOverlay == .turnLost
+    }
+
+    var softReconnectMessage: String {
+        text.isEmpty && tools.isEmpty
+            ? MessagingResumeCopy.softReconnect
+            : MessagingResumeCopy.softReconnectAlt
+    }
 
     var showsStreamingText: Bool {
         !settledTextInHistory && (!text.isEmpty || phase == .streaming || phase == .starting)
@@ -87,10 +119,12 @@ struct MessagingLiveTurn: Equatable {
         case .messageStart:
             phase = .streaming
             settledTextInHistory = false
+            noteProofOfLife()
         case .messageDelta(_, let delta):
             text += delta
             phase = .streaming
             settledTextInHistory = false
+            noteProofOfLife()
         case .reasoningDelta(_, let delta):
             reasoning += delta
             if phase == .starting { phase = .streaming }
@@ -105,6 +139,7 @@ struct MessagingLiveTurn: Equatable {
                 self.reasoning = reasoning
             }
             phase = tools.contains(where: { $0.status == .running }) ? .usingTool : .completing
+            noteProofOfLife()
         case .messageError(_, let message):
             errorMessage = message
             failRunningTools(message)
@@ -151,6 +186,32 @@ struct MessagingLiveTurn: Equatable {
         errorMessage = nil
         tools.removeAll()
         phase = .completing
+        noteProofOfLife()
+    }
+
+    mutating func noteProofOfLife() {
+        resumeSyncLossDue = false
+        if lifecycleOverlay == .appBackground || lifecycleOverlay == .resumeSync
+            || lifecycleOverlay == .reconnecting {
+            lifecycleOverlay = .resumedStream
+        }
+        if lifecycleOverlay == .resumedStream {
+            lifecycleOverlay = nil
+        }
+    }
+
+    /// Transport tear-down (background or brief WS sleep) — not user-visible failure.
+    mutating func markTransportInterrupted() {
+        guard phase.isActive else { return }
+    }
+
+    /// Sync proved the run cannot be recovered.
+    mutating func markTurnLost(message: String = MessagingResumeCopy.turnLost) {
+        interruptRunningTools()
+        errorMessage = message
+        lifecycleOverlay = .turnLost
+        resumeSyncLossDue = false
+        phase = .failed
     }
 
     static func isToolEvent(_ event: StreamEvent) -> Bool {
@@ -158,15 +219,6 @@ struct MessagingLiveTurn: Equatable {
         case .toolStart, .toolDelta, .toolComplete, .toolFailed: return true
         default: return false
         }
-    }
-
-    mutating func markDropped() {
-        guard phase.isActive else { return }
-        interruptRunningTools()
-        if text.isEmpty && tools.isEmpty {
-            errorMessage = errorMessage ?? "The reply stream dropped. Waiting for the saved message…"
-        }
-        phase = .interrupted
     }
 
     private mutating func upsertRunningTool(name: String, input: String?, replace: Bool) {
@@ -242,5 +294,6 @@ enum MessagingTurnHistory {
 @MainActor
 protocol MessagingStreamRouting: AnyObject {
     func handleUnboundStreamEvent(_ event: StreamEvent, join: StreamJoinKey)
-    func handleStreamDisconnected()
+    func handleStreamDisconnected(reason: MessagingTransportInterruptReason)
+    func handleScenePhase(_ phase: ScenePhase, gatewaySessionValid: Bool)
 }

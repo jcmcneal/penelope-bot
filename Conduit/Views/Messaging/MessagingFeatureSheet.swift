@@ -97,7 +97,7 @@ struct MessagingSettingsView: View {
     @StateObject private var store = MessagingStore()
 
     private var setupEnabled: Bool {
-        appState.isConnected
+        appState.messagingGatewaySessionValid
             && !appState.isConnecting
             && !appState.isProfileSwitching
             && appState.turnState != .synchronizing

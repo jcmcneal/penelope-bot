@@ -31,6 +31,12 @@ final class MessagingStore: ObservableObject {
     private weak var dashboardBridge: DashboardTicketBridge?
     var onCacheIdentityChanged: (() -> Void)?
     private var catalogBootstrapID: UUID?
+    private var resumeSyncTasks: [String: ResumeSyncTasks] = [:]
+
+    private struct ResumeSyncTasks {
+        var softReconnect: Task<Void, Never>?
+        var lossBudget: Task<Void, Never>?
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -435,9 +441,14 @@ final class MessagingStore: ObservableObject {
         liveTurns[destination.id]
     }
 
-    func startLiveTurn(for destination: MessagingDestination, profileID: String?) {
+    func startLiveTurn(
+        for destination: MessagingDestination,
+        profileID: String?,
+        clientTurnID: String? = nil
+    ) {
         liveTurns[destination.id] = MessagingLiveTurn(
             destinationID: destination.id,
+            clientTurnID: clientTurnID ?? UUID().uuidString,
             profileID: profileID,
             conversationID: destination.conversationID
         )
@@ -501,15 +512,29 @@ final class MessagingStore: ObservableObject {
         }
         if let history {
             turn.absorbHistory(history.messages)
+            if turn.settledTextInHistory || !activeRuns.isEmpty {
+                noteProofOfLife(for: destination.id, turn: &turn)
+            } else if turn.resumeSyncLossDue,
+                      activeRuns.isEmpty,
+                      MessagingTurnHistory.completedAssistant(in: history.messages) == nil {
+                turn.markTurnLost()
+            }
         }
         if shouldDrop(turn, activeRuns: activeRuns) {
+            cancelResumeSync(for: destination.id)
             liveTurns[destination.id] = nil
             return
         }
         liveTurns[destination.id] = turn
     }
 
+    func retryLostTurn(for destination: MessagingDestination) {
+        cancelResumeSync(for: destination.id)
+        liveTurns[destination.id] = nil
+    }
+
     private func shouldDrop(_ turn: MessagingLiveTurn, activeRuns: [MessagingRun]) -> Bool {
+        if turn.showsTurnLostChrome { return false }
         if turn.settledTextInHistory {
             return activeRuns.isEmpty && !turn.tools.contains(where: { $0.status == .running })
         }
@@ -524,6 +549,32 @@ final class MessagingStore: ObservableObject {
 }
 
 extension MessagingStore: MessagingStreamRouting {
+    func handleScenePhase(_ phase: ScenePhase, gatewaySessionValid: Bool) {
+        switch phase {
+        case .background:
+            for key in liveTurns.keys {
+                guard var turn = liveTurns[key], turn.phase.isActive else { continue }
+                turn.lifecycleOverlay = .appBackground
+                turn.markTransportInterrupted()
+                liveTurns[key] = turn
+            }
+            cancelAllResumeSync()
+        case .active:
+            guard gatewaySessionValid else { return }
+            for key in liveTurns.keys {
+                guard var turn = liveTurns[key] else { continue }
+                guard turn.phase.isActive || turn.lifecycleOverlay == .appBackground else { continue }
+                turn.lifecycleOverlay = .resumeSync
+                liveTurns[key] = turn
+                beginResumeSync(for: key)
+            }
+        case .inactive:
+            cancelAllResumeSync()
+        @unknown default:
+            break
+        }
+    }
+
     func handleUnboundStreamEvent(_ event: StreamEvent, join: StreamJoinKey = .none) {
         guard !liveTurns.isEmpty else { return }
         if case .unparsed = event { return }
@@ -531,11 +582,66 @@ extension MessagingStore: MessagingStreamRouting {
         apply(event, join: join, to: key)
     }
 
-    func handleStreamDisconnected() {
-        for key in liveTurns.keys {
-            guard var turn = liveTurns[key] else { continue }
-            turn.markDropped()
-            liveTurns[key] = turn
+    func handleStreamDisconnected(reason: MessagingTransportInterruptReason) {
+        switch reason {
+        case .sessionDead:
+            cancelAllResumeSync()
+        case .background, .foregroundTransport:
+            for key in liveTurns.keys {
+                guard var turn = liveTurns[key], turn.phase.isActive else { continue }
+                turn.markTransportInterrupted()
+                if reason == .background {
+                    turn.lifecycleOverlay = .appBackground
+                } else if turn.lifecycleOverlay == nil {
+                    turn.lifecycleOverlay = .resumeSync
+                }
+                liveTurns[key] = turn
+            }
+            if reason == .foregroundTransport {
+                for key in liveTurns.keys where liveTurns[key]?.phase.isActive == true {
+                    beginResumeSync(for: key)
+                }
+            }
+        }
+    }
+
+    private func beginResumeSync(for key: String) {
+        cancelResumeSync(for: key)
+        var tasks = ResumeSyncTasks()
+        tasks.softReconnect = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: MessagingResumeTiming.softReconnectDelay) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            guard var turn = self.liveTurns[key] else { return }
+            guard turn.lifecycleOverlay == .resumeSync || turn.lifecycleOverlay == .appBackground else { return }
+            turn.lifecycleOverlay = .reconnecting
+            self.liveTurns[key] = turn
+        }
+        tasks.lossBudget = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: MessagingResumeTiming.turnLossBudget) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            guard var turn = self.liveTurns[key] else { return }
+            guard turn.phase.isActive || turn.lifecycleOverlay == .reconnecting
+                    || turn.lifecycleOverlay == .resumeSync else { return }
+            turn.resumeSyncLossDue = true
+            self.liveTurns[key] = turn
+        }
+        resumeSyncTasks[key] = tasks
+    }
+
+    private func noteProofOfLife(for key: String, turn: inout MessagingLiveTurn) {
+        turn.noteProofOfLife()
+        cancelResumeSync(for: key)
+    }
+
+    private func cancelResumeSync(for key: String) {
+        resumeSyncTasks[key]?.softReconnect?.cancel()
+        resumeSyncTasks[key]?.lossBudget?.cancel()
+        resumeSyncTasks.removeValue(forKey: key)
+    }
+
+    private func cancelAllResumeSync() {
+        for key in resumeSyncTasks.keys {
+            cancelResumeSync(for: key)
         }
     }
 
@@ -576,6 +682,10 @@ extension MessagingStore: MessagingStreamRouting {
         guard var turn = liveTurns[key] else { return }
         turn.bindJoin(join)
         guard turn.apply(event) else { return }
+        if turn.lifecycleOverlay == .resumeSync || turn.lifecycleOverlay == .reconnecting
+            || turn.lifecycleOverlay == .appBackground {
+            noteProofOfLife(for: key, turn: &turn)
+        }
         liveTurns[key] = turn
     }
 }
