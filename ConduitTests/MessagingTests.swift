@@ -111,6 +111,7 @@ final class MessagingTests: XCTestCase {
         model.draft = "hello"
         await model.send(recipients: [])
         XCTAssertNotNil(model.pending)
+        await model.waitForSubmitCompletion()
         await model.checkDelivery()
         XCTAssertEqual(writes.count, 2)
         XCTAssertEqual(writes[0]["client_message_id"] as? String, writes[1]["client_message_id"] as? String)
@@ -441,6 +442,11 @@ final class MessagingTests: XCTestCase {
             MessagingComposerAction.resolve(hasText: true, canWrite: true, isSending: false, hasPending: true),
             .unavailable
         )
+        // LOCAL_SENT cool-down blocks briefly; pending delivery reconciliation does not.
+        XCTAssertEqual(
+            MessagingComposerAction.resolve(hasText: true, canWrite: true, isSending: false, hasPending: false),
+            .send
+        )
     }
 
     func testMessagingViewportKeysStayOutsideHermesProfiles() {
@@ -484,6 +490,7 @@ final class MessagingTests: XCTestCase {
         model.draft = "stale"
         let ok = await model.send(recipients: [], text: "from composer")
         XCTAssertTrue(ok)
+        await model.waitForSubmitCompletion()
         XCTAssertEqual(bodies, ["from composer"])
     }
 
@@ -655,13 +662,14 @@ final class MessagingAwaitingReplyTests: XCTestCase {
         XCTAssertTrue(ok)
         XCTAssertTrue(model.awaitingReply)
         XCTAssertTrue(model.prefersUrgentPolling)
+        await model.waitForSubmitCompletion()
         includeRun = true
         await model.load()
         XCTAssertFalse(model.awaitingReply)
         XCTAssertFalse(model.prefersUrgentPolling)
     }
 
-    func testHardRejectionClearsAwaitingReply() async {
+    func testHardRejectionKeepsPendingBubbleAndMarksFailed() async {
         let requester = MessagingRequester { path, method, _ in
             if path.hasSuffix("/hub") { return self.hub() }
             if path.hasSuffix("/capabilities") { return self.capability() }
@@ -681,9 +689,54 @@ final class MessagingAwaitingReplyTests: XCTestCase {
         )
         await model.load()
         _ = await model.send(recipients: [], text: "nope")
-        XCTAssertNil(model.pending)
+        await model.waitForSubmitCompletion()
+        XCTAssertNotNil(model.pending)
+        XCTAssertEqual(model.pendingDelivery, .failed)
         XCTAssertFalse(model.awaitingReply)
         XCTAssertNotNil(model.error)
+        XCTAssertFalse(model.composerSendBlocked)
+    }
+
+    func testLocalSendAckReturnsBeforeHTTPCompletes() async {
+        let requester = MessagingRequester { path, method, body in
+            if path.hasSuffix("/hub") { return self.hub() }
+            if path.hasSuffix("/capabilities") { return self.capability() }
+            if path.hasSuffix("/conversations") { return ["conversations": []] }
+            if method == "POST" {
+                try await Task.sleep(for: .milliseconds(500))
+                return [
+                    "conversation": [
+                        "id": "dm", "kind": "dm", "title": "SWE", "profiles": ["swe-id"],
+                        "default_responder": "swe-id", "revision": 1, "preview": "", "updated_at": 1,
+                        "unread": 0, "archived": false, "pinned": false, "muted": false,
+                    ],
+                    "message": [
+                        "id": body?["client_message_id"] ?? "m", "sequence": 2, "author": "user",
+                        "body": body?["body"] ?? "", "created_at": 2,
+                    ],
+                ]
+            }
+            return self.conversationJSON()
+        }
+        let store = MessagingStore()
+        store.connect(requester: requester, scope: "server")
+        await store.refresh()
+        let model = MessagingConversationStore(
+            destination: .init(conversationID: nil, profileID: "swe-id"),
+            owner: store,
+            defaults: UserDefaults(suiteName: UUID().uuidString)!
+        )
+        let started = Date()
+        let ok = await model.send(recipients: [], text: "fast")
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertTrue(ok)
+        XCTAssertNotNil(model.pending)
+        XCTAssertLessThan(elapsed, 0.2)
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(model.pendingDelivery, .inFlight)
+        await model.waitForSubmitCompletion()
+        XCTAssertNil(model.pending)
+        XCTAssertFalse(model.composerSendBlocked)
     }
 
     func testAwaitingReplyTimesOutWithoutRuns() async {

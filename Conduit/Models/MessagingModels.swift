@@ -219,6 +219,26 @@ struct MessagingHistory: Codable {
 struct MessagingSendReceipt: Codable {
     let conversation: MessagingConversation
     let message: MessagingMessage
+    /// Active runs admitted with the send ack — used to bind the live overlay
+    /// before the first history poll or WS `messaging.run.start`.
+    let runs: [MessagingRun]
+
+    init(conversation: MessagingConversation, message: MessagingMessage, runs: [MessagingRun] = []) {
+        self.conversation = conversation
+        self.message = message
+        self.runs = runs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        conversation = try container.decode(MessagingConversation.self, forKey: .conversation)
+        message = try container.decode(MessagingMessage.self, forKey: .message)
+        runs = try container.decodeIfPresent([MessagingRun].self, forKey: .runs) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case conversation, message, runs
+    }
 }
 
 struct MessagingDestination: Identifiable, Equatable {
@@ -297,6 +317,12 @@ enum RelativeTimestamp {
         guard date.timeIntervalSince1970 > 0 else { return "" }
         return formatter.localizedString(for: date, relativeTo: Date())
     }
+}
+
+enum PendingDeliveryState: Equatable, Codable {
+    case inFlight
+    case failed
+    case uncertain
 }
 
 struct PendingMessagingSend: Codable, Equatable {

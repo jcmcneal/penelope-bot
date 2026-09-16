@@ -243,7 +243,16 @@ struct MessagingConversationView: View {
                         timestamp: MessagingTranscriptProjection.timestampString(for: pending.createdAt)
                     ))
                     .id(pending.id)
-                    .opacity(0.85)
+                    .opacity(model.pendingDelivery == .failed ? 1 : 0.85)
+                    .overlay(alignment: .bottomTrailing) {
+                        if model.pendingDelivery == .failed {
+                            Image(systemName: "exclamationmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .padding(4)
+                                .accessibilityLabel("Delivery failed")
+                        }
+                    }
                     .accessibilityIdentifier("messaging.optimistic-pending")
                 }
 
@@ -743,9 +752,11 @@ struct MessagingConversationView: View {
                 }
                 .accessibilityLabel("Choose responders")
             }
-            if model.pending != nil {
-                Button("Check delivery") { Task { await model.checkDelivery() } }
-                    .disabled(model.sending || !model.canWrite)
+            if model.pending != nil, model.pendingDelivery == .uncertain || model.pendingDelivery == .failed {
+                Button(model.pendingDelivery == .failed ? "Retry delivery" : "Check delivery") {
+                    Task { await model.checkDelivery() }
+                }
+                .disabled(model.sending || !model.canWrite)
             }
             ComposerBar(
                 showsModelPicker: false,
@@ -753,7 +764,7 @@ struct MessagingConversationView: View {
                     placeholder: "Message \(title)…",
                     canWrite: model.canWrite,
                     isSending: model.sending,
-                    hasPending: model.pending != nil,
+                    hasPending: model.composerSendBlocked,
                     editorAccessibilityIdentifier: "messaging.composer",
                     draftKey: MessagingConversationChrome.draftKey(for: model.destination),
                     seedDraft: model.draft,
