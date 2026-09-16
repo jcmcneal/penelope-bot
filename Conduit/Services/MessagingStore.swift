@@ -443,6 +443,41 @@ final class MessagingStore: ObservableObject {
         )
     }
 
+    /// Bind join keys from the send ack so early WS tokens route into the shell
+    /// before history poll or `messaging.run.start`.
+    func bindAdmittedRun(for destination: MessagingDestination, receipt: MessagingSendReceipt) {
+        let admitted = receipt.runs.filter { ["queued", "running"].contains($0.status.lowercased()) }
+        if var turn = liveTurns[destination.id] {
+            turn.conversationID = receipt.conversation.id
+            for run in admitted {
+                turn.bindProfile(run.profile)
+                if turn.runID == nil { turn.runID = run.id }
+                if let sessionID = run.sessionID { turn.bindSession(sessionID) }
+            }
+            liveTurns[destination.id] = turn
+            return
+        }
+        guard !admitted.isEmpty else { return }
+        var turn = MessagingLiveTurn(
+            destinationID: destination.id,
+            profileID: admitted.first?.profile ?? destination.profileID,
+            conversationID: receipt.conversation.id
+        )
+        for run in admitted {
+            turn.bindProfile(run.profile)
+            turn.runID = run.id
+            if let sessionID = run.sessionID { turn.bindSession(sessionID) }
+        }
+        liveTurns[destination.id] = turn
+    }
+
+    func markLiveTurnFailed(for destination: MessagingDestination, message: String) {
+        guard var turn = liveTurns[destination.id] else { return }
+        turn.errorMessage = message
+        turn.phase = .failed
+        liveTurns[destination.id] = turn
+    }
+
     func syncLiveTurn(for destination: MessagingDestination, history: MessagingHistory?) {
         let activeRuns = history?.runs.filter { ["queued", "running"].contains($0.status.lowercased()) } ?? []
         guard var turn = liveTurns[destination.id] else {
@@ -513,6 +548,10 @@ extension MessagingStore: MessagingStreamRouting {
             if liveTurns[conversationKey] != nil {
                 return conversationKey
             }
+        }
+        if let runID = join.runID,
+           let key = liveTurns.first(where: { $0.value.runID == runID })?.key {
+            return key
         }
         if let profileID = join.profileID {
             let dmKey = "dm:\(profileID)"

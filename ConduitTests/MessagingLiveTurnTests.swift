@@ -258,6 +258,64 @@ final class MessagingStreamRoutingTests: XCTestCase {
         XCTAssertEqual(store.liveTurn(for: designer)?.sessionIDs ?? [], [])
     }
 
+    func testSendReceiptBindsSessionBeforeFirstToken() {
+        let store = MessagingStore()
+        let destination = MessagingDestination(conversationID: "c1", profileID: "swe-id")
+        store.startLiveTurn(for: destination, profileID: "swe-id")
+        let receipt = MessagingSendReceipt(
+            conversation: MessagingConversation(
+                id: "c1", kind: "dm", title: "SWE", profiles: ["swe-id"],
+                defaultResponder: "swe-id", revision: 1, preview: "", updatedAt: 1,
+                unread: 0, archived: false, pinned: false, muted: false
+            ),
+            message: MessagingMessage(id: "m1", sequence: 1, author: "user", body: "hi", createdAt: 1),
+            runs: [MessagingRun(id: "run-1", profile: "swe-id", status: "running", detail: "", sessionID: "admit-sid")]
+        )
+        store.bindAdmittedRun(for: destination, receipt: receipt)
+
+        store.handleUnboundStreamEvent(
+            .messageDelta(sessionId: "admit-sid", text: "Hel"),
+            join: StreamJoinKey(conversationID: "c1", runID: "run-1", profileID: "swe-id")
+        )
+        store.handleUnboundStreamEvent(
+            .messageDelta(sessionId: "admit-sid", text: "lo"),
+            join: StreamJoinKey(conversationID: "c1", runID: "run-1", profileID: "swe-id")
+        )
+
+        let turn = store.liveTurn(for: destination)
+        XCTAssertEqual(turn?.text, "Hello")
+        XCTAssertEqual(turn?.runID, "run-1")
+        XCTAssertEqual(turn?.sessionIDs, ["admit-sid"])
+    }
+
+    func testAdmittedRunIDRoutesAmongTwoLiveTurns() {
+        let store = MessagingStore()
+        let swe = MessagingDestination(conversationID: "c-swe", profileID: nil)
+        let designer = MessagingDestination(conversationID: "c-des", profileID: nil)
+        store.startLiveTurn(for: swe, profileID: "swe-id")
+        store.startLiveTurn(for: designer, profileID: "designer-id")
+        store.bindAdmittedRun(
+            for: swe,
+            receipt: MessagingSendReceipt(
+                conversation: MessagingConversation(
+                    id: "c-swe", kind: "dm", title: "SWE", profiles: ["swe-id"],
+                    defaultResponder: "swe-id", revision: 1, preview: "", updatedAt: 1,
+                    unread: 0, archived: false, pinned: false, muted: false
+                ),
+                message: MessagingMessage(id: "m1", sequence: 1, author: "user", body: "hi", createdAt: 1),
+                runs: [MessagingRun(id: "run-swe", profile: "swe-id", status: "running", detail: "", sessionID: "sid-swe")]
+            )
+        )
+
+        store.handleUnboundStreamEvent(
+            .messageDelta(sessionId: "runtime-unknown", text: "ours"),
+            join: StreamJoinKey(conversationID: "c-swe", runID: "run-swe")
+        )
+
+        XCTAssertEqual(store.liveTurn(for: swe)?.text, "ours")
+        XCTAssertEqual(store.liveTurn(for: designer)?.text, "")
+    }
+
     func testMessagingRunStartBindsOpaqueSessionThenTokensFollow() {
         let store = MessagingStore()
         let destination = MessagingDestination(conversationID: nil, profileID: "swe-id")

@@ -9,11 +9,15 @@ final class MessagingConversationStore: ObservableObject {
     /// After send, poll this often until runs appear or the urgent window ends.
     static var urgentPollInterval: Duration = .seconds(1)
     static var urgentPollWindow: Duration = .seconds(8)
+    /// Brief LOCAL_SENT cool-down — independent of HTTP completion.
+    static var sendCooldownDuration: Duration = .milliseconds(100)
 
     @Published private(set) var history: MessagingHistory?
     @Published private(set) var error: String?
     @Published private(set) var sending = false
     @Published private(set) var pending: PendingMessagingSend?
+    @Published private(set) var pendingDelivery: PendingDeliveryState?
+    @Published private(set) var sendCooldownActive = false
     @Published private(set) var awaitingReply = false
     /// Conversation view shortens its history poll while this is true.
     @Published private(set) var prefersUrgentPolling = false
@@ -27,6 +31,8 @@ final class MessagingConversationStore: ObservableObject {
     private var lastRead = 0
     private var awaitingReplyTimeoutTask: Task<Void, Never>?
     private var urgentPollingTask: Task<Void, Never>?
+    private var sendCooldownTask: Task<Void, Never>?
+    private var submitTask: Task<Void, Never>?
 
     init(destination: MessagingDestination, owner: MessagingStore, defaults: UserDefaults = .standard) {
         self.destination = destination; self.owner = owner; self.epoch = owner.generation; self.defaults = defaults
@@ -42,6 +48,7 @@ final class MessagingConversationStore: ObservableObject {
         if let data = defaults.data(forKey: draftKey + ".pending") {
             pending = try? JSONDecoder().decode(PendingMessagingSend.self, from: data)
             if pending != nil {
+                pendingDelivery = .uncertain
                 owner.startLiveTurn(for: destination, profileID: destination.profileID)
                 beginAwaitingReply()
             }
@@ -51,9 +58,21 @@ final class MessagingConversationStore: ObservableObject {
     deinit {
         awaitingReplyTimeoutTask?.cancel()
         urgentPollingTask?.cancel()
+        sendCooldownTask?.cancel()
     }
 
     var canWrite: Bool { epoch == owner.generation && owner.isReady }
+
+    /// Send is briefly gated locally, not on HTTP `sending` or pending bubble reconciliation.
+    var composerSendBlocked: Bool {
+        sendCooldownActive || pendingDelivery == .inFlight || pendingDelivery == .uncertain
+    }
+
+    /// Test seam: await the background HTTP submit started by `send`.
+    func waitForSubmitCompletion() async {
+        if let submitTask { await submitTask.value }
+    }
+
     func saveDraft() { defaults.set(draft, forKey: draftKey) }
 
     var historyPollInterval: Duration {
@@ -87,18 +106,26 @@ final class MessagingConversationStore: ObservableObject {
     }
     func send(recipients: [String], text: String? = nil) async -> Bool {
         let payload = (text ?? draft)
-        guard canWrite, !sending, pending == nil, !payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        guard canWrite, !composerSendBlocked,
+              pending == nil || pendingDelivery == .failed,
+              !payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        if pendingDelivery == .failed {
+            clearFailedPending()
+        }
         if let text { draft = text; saveDraft() }
         let value = PendingMessagingSend(id: UUID().uuidString, text: payload, recipients: recipients)
         pending = value
+        pendingDelivery = .inFlight
         defaults.set(try? JSONEncoder().encode(value), forKey: draftKey + ".pending")
         owner.startLiveTurn(
             for: destination,
             profileID: destination.profileID ?? recipients.first
         )
         beginAwaitingReply()
-        await submit(value)
-        return pending != nil || error == nil
+        beginSendCooldown()
+        submitTask?.cancel()
+        submitTask = Task { await submit(value) }
+        return true
     }
     private func submit(_ value: PendingMessagingSend) async {
         guard canWrite, let service = owner.service else { return }
@@ -110,14 +137,21 @@ final class MessagingConversationStore: ObservableObject {
             await accepted(receipt, pending: value)
         } catch DashboardTicketBridgeError.http(let status, let detail) where [400, 403, 409, 422].contains(status) {
             guard epoch == owner.generation else { return }
-            pending = nil; defaults.removeObject(forKey: draftKey + ".pending")
-            owner.clearLiveTurn(for: destination)
+            pendingDelivery = .failed
+            owner.markLiveTurnFailed(for: destination, message: detail ?? "Message not delivered.")
             clearAwaitingReply()
             record(DashboardTicketBridgeError.http(status: status, detail: detail))
-        } catch { if epoch == owner.generation { self.error = MessagingError.unknownOutcome.localizedDescription } }
+        } catch {
+            if epoch == owner.generation {
+                pendingDelivery = .uncertain
+                self.error = MessagingError.unknownOutcome.localizedDescription
+            }
+        }
     }
     func checkDelivery() async {
-        guard canWrite, !sending, let pending, let service = owner.service else { return }
+        if let submitTask { await submitTask.value }
+        guard canWrite, let pending, let service = owner.service else { return }
+        guard pendingDelivery == .uncertain || pendingDelivery == .failed else { return }
         sending = true
         do {
             let receipt = try await service.reconcile(pending, to: destination)
@@ -138,8 +172,11 @@ final class MessagingConversationStore: ObservableObject {
         if let profile = destination.profileID, receipt.conversation.kind != "dm" || receipt.conversation.profiles != [profile] {
             error = MessagingError.invalidResponse.localizedDescription; return
         }
+        owner.bindAdmittedRun(for: destination, receipt: receipt)
         owner.historyCache.accept(receipt, for: destination, current: history)
-        pending = nil; defaults.removeObject(forKey: draftKey + ".pending")
+        pending = nil
+        pendingDelivery = nil
+        defaults.removeObject(forKey: draftKey + ".pending")
         if draft == value.text { draft = ""; saveDraft() }
         error = nil
         let followUpDestination = destination
@@ -198,6 +235,23 @@ final class MessagingConversationStore: ObservableObject {
             record(error)
             return false
         }
+    }
+
+    private func beginSendCooldown() {
+        sendCooldownActive = true
+        sendCooldownTask?.cancel()
+        sendCooldownTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: Self.sendCooldownDuration) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            self.sendCooldownActive = false
+        }
+    }
+
+    private func clearFailedPending() {
+        pending = nil
+        pendingDelivery = nil
+        defaults.removeObject(forKey: draftKey + ".pending")
+        owner.clearLiveTurn(for: destination)
     }
 
     private func beginAwaitingReply() {
