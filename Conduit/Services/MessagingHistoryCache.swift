@@ -130,8 +130,12 @@ final class MessagingHistoryCache {
     func accept(_ receipt: MessagingSendReceipt, for destination: MessagingDestination, current: MessagingHistory?) {
         invalidate(destination)
         let previous = snapshot(for: destination) ?? current
-        let incoming = MessagingHistory(conversation: receipt.conversation, messages: [receipt.message],
-                                        runs: previous?.runs ?? [], before: previous?.before)
+        let incoming = MessagingHistory(
+            conversation: receipt.conversation,
+            messages: [receipt.message],
+            runs: receipt.runs.isEmpty ? (previous?.runs ?? []) : receipt.runs,
+            before: previous?.before
+        )
         publish(Self.merge(previous, incoming: incoming), for: destination)
     }
 
