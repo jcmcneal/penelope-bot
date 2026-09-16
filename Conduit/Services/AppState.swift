@@ -419,6 +419,11 @@ final class AppState: ObservableObject {
     @Published var client: HermesClient?
     @Published var isConnected = false
     @Published var isConnecting = false
+    /// Messaging chrome treats the saved gateway session as connected even when
+    /// the local WebSocket is briefly down during background resume.
+    var messagingGatewaySessionValid: Bool {
+        connection != nil && !showLogin
+    }
     @Published var profiles: [String] = []
     @Published private(set) var sessionFilterOrder: [SessionSource] = [.chat, .discord, .telegram, .api, .webhook, .other]
     /// Stable per-profile gateway-media resolver for settled row content.
@@ -5317,7 +5322,15 @@ final class AppState: ObservableObject {
     // MARK: - Reconnect and scene lifecycle
 
     private func handleDisconnect() {
-        messagingStreamRouter?.handleStreamDisconnected()
+        let interruptReason: MessagingTransportInterruptReason
+        if connection == nil || showLogin {
+            interruptReason = .sessionDead
+        } else if !isSceneActive {
+            interruptReason = .background
+        } else {
+            interruptReason = .foregroundTransport
+        }
+        messagingStreamRouter?.handleStreamDisconnected(reason: interruptReason)
         let wasRunning = isBusy
         isConnected = false
         guard connection != nil else { return }
@@ -5632,6 +5645,7 @@ final class AppState: ObservableObject {
         switch phase {
         case .active:
             isSceneActive = true
+            messagingStreamRouter?.handleScenePhase(phase, gatewaySessionValid: messagingGatewaySessionValid)
             voiceConversationController.setForegroundActive(true)
             messageReadAloudController.setForegroundActive(true)
             // Consume the background arming even while signed out, so a
@@ -5734,6 +5748,7 @@ final class AppState: ObservableObject {
 
         case .background:
             isSceneActive = false
+            messagingStreamRouter?.handleScenePhase(phase, gatewaySessionValid: messagingGatewaySessionValid)
             hasEnteredBackgroundScenePhase = true
             // The socket can die while suspended and turn edges can be missed,
             // so the local turn state must be re-confirmed against the
@@ -5780,6 +5795,7 @@ final class AppState: ObservableObject {
 
         case .inactive:
             isSceneActive = false
+            messagingStreamRouter?.handleScenePhase(phase, gatewaySessionValid: messagingGatewaySessionValid)
             // Same reasoning as .background: a dip through Control Center or a
             // system overlay can miss turn edges. This never causes a resume —
             // the foreground path treats staleness as a read-only probe.

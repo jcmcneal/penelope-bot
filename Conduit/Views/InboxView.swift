@@ -37,7 +37,7 @@ struct InboxView: View {
     }
 
     private var messagingSetupAgentEnabled: Bool {
-        appState.isConnected
+        appState.messagingGatewaySessionValid
             && !appState.isConnecting
             && !appState.isProfileSwitching
             && appState.turnState != .synchronizing

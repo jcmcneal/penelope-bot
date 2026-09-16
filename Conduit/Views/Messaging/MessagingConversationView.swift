@@ -612,7 +612,8 @@ struct MessagingConversationView: View {
 
     private var showsLiveTurnOverlay: Bool {
         guard let turn = liveTurn else { return false }
-        return !turn.tools.isEmpty || turn.showsStreamingText || turn.errorMessage != nil
+        if turn.showsSoftReconnectChrome || turn.showsTurnLostChrome { return true }
+        return !turn.tools.isEmpty || turn.showsStreamingText
     }
 
     private var optimisticPendingMessage: MessagingMessage? {
@@ -649,12 +650,12 @@ struct MessagingConversationView: View {
                 )
             }
             if turn.showsStreamingText {
-                if turn.text.isEmpty {
+                if turn.text.isEmpty && !turn.showsSoftReconnectChrome {
                     HStack {
                         MessagingAwaitingReplyDots()
                         Spacer(minLength: 0)
                     }
-                } else {
+                } else if !turn.text.isEmpty {
                     StreamingBubble(
                         text: turn.text,
                         active: turn.phase.isActive,
@@ -664,15 +665,51 @@ struct MessagingConversationView: View {
                     )
                 }
             }
-            if let error = turn.errorMessage, turn.phase == .failed || turn.phase == .interrupted {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("messaging.stream-error")
+            if turn.showsSoftReconnectChrome {
+                softReconnectLine(for: turn, profileID: profileID, displayName: displayName)
+            }
+            if turn.showsTurnLostChrome, let error = turn.errorMessage {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("Retry") {
+                        Task { await model.retryLostTurn() }
+                    }
+                    .font(.footnote.weight(.semibold))
+                }
+                .accessibilityIdentifier("messaging.stream-error")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("messaging.live-turn")
+    }
+
+    @ViewBuilder
+    private func softReconnectLine(for turn: MessagingLiveTurn, profileID: String, displayName: String) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            ConduitAgentMark(
+                isActive: true,
+                avatarURL: appState.profileAvatarURL(for: profileID),
+                displayName: displayName,
+                profileID: profileID,
+                state: .thinking
+            )
+            VStack(alignment: .leading, spacing: 6) {
+                Text(displayName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.conduitSecondaryText)
+                HStack(spacing: 8) {
+                    MessagingAwaitingReplyDots()
+                    Text(turn.softReconnectMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("messaging.soft-reconnect")
     }
 
     private var activePresence: [MessagingRunPresence.Item] {
