@@ -625,6 +625,62 @@ final class MessagingAwaitingReplyTests: XCTestCase {
         ]
     }
 
+    func testHumanYieldClearsAwaitingReplyAndShowsRecipientHint() async {
+        let requester = MessagingRequester { path, method, body in
+            if path.hasSuffix("/hub") { return self.hub() }
+            if path.hasSuffix("/capabilities") { return self.capability() }
+            if path.hasSuffix("/conversations") { return ["conversations": []] }
+            if method == "POST" {
+                return [
+                    "conversation": [
+                        "id": "group-1", "kind": "group", "title": "Bots", "profiles": ["swe-id", "designer-id"],
+                        "default_responder": "swe-id", "revision": 1, "preview": "", "updated_at": 1,
+                        "unread": 0, "archived": false, "pinned": false, "muted": false,
+                    ],
+                    "message": [
+                        "id": body?["client_message_id"] ?? "m", "sequence": 2, "author": "user",
+                        "body": body?["body"] ?? "", "created_at": 2,
+                    ],
+                ]
+            }
+            return [
+                "conversation": [
+                    "id": "group-1", "kind": "group", "title": "Bots", "profiles": ["swe-id", "designer-id"],
+                    "default_responder": "swe-id", "revision": 1, "preview": "", "updated_at": 1,
+                    "unread": 0, "archived": false, "pinned": false, "muted": false,
+                ],
+                "messages": [
+                    ["id": "m1", "sequence": 1, "author": "user", "body": "hi", "created_at": 1],
+                    ["id": "m2", "sequence": 2, "author": "user", "body": "ping", "created_at": 2],
+                ],
+                "runs": [],
+            ] as [String: Any]
+        }
+        let store = MessagingStore()
+        store.connect(requester: requester, scope: "server")
+        await store.refresh()
+        let destination = MessagingDestination(conversationID: "group-1", profileID: nil)
+        let model = MessagingConversationStore(
+            destination: destination,
+            owner: store,
+            defaults: UserDefaults(suiteName: UUID().uuidString)!
+        )
+        await model.load()
+        _ = await model.send(recipients: [], text: "ping")
+        await model.waitForSubmitCompletion()
+        XCTAssertTrue(model.awaitingReply)
+
+        store.handleUnboundStreamEvent(
+            .turnYielded(sessionId: "live-sid", reason: "human"),
+            join: StreamJoinKey(conversationID: "group-1")
+        )
+
+        XCTAssertFalse(model.awaitingReply)
+        XCTAssertTrue(model.showRecipientPickerHint)
+        model.noteRecipientsUpdated(["swe-id"])
+        XCTAssertFalse(model.showRecipientPickerHint)
+    }
+
     func testSendLatchesAwaitingReplyUntilRunsAppear() async {
         var includeRun = false
         let requester = MessagingRequester { path, method, body in

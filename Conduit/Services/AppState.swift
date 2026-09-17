@@ -12724,7 +12724,7 @@ final class AppState: ObservableObject {
             }
             activeAgents = delegateAgents.filter { $0.status.isActive }.count
 
-        case .messagingRunStart:
+        case .messagingRunStart, .turnYielded:
             break
 
         case .unparsed:

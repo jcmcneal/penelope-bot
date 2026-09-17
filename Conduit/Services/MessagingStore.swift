@@ -13,6 +13,8 @@ final class MessagingStore: ObservableObject {
     @Published private(set) var pinnedBotIDs: [String] = []
     @Published private(set) var cachedDisplayProfiles: [MessagingProfile] = []
     @Published private(set) var liveTurns: [String: MessagingLiveTurn] = [:]
+    /// Destinations that just received `turn.yielded` with `reason=human`.
+    @Published private(set) var humanYieldedDestinationIDs: Set<String> = []
     private(set) var service: MessagingService?
     private(set) var generation = UUID()
     let historyCache = MessagingHistoryCache()
@@ -535,6 +537,7 @@ final class MessagingStore: ObservableObject {
 
     private func shouldDrop(_ turn: MessagingLiveTurn, activeRuns: [MessagingRun]) -> Bool {
         if turn.showsTurnLostChrome { return false }
+        if turn.phase == .yielded { return activeRuns.isEmpty }
         if turn.settledTextInHistory {
             return activeRuns.isEmpty && !turn.tools.contains(where: { $0.status == .running })
         }
@@ -545,6 +548,10 @@ final class MessagingStore: ObservableObject {
 
     func clearLiveTurn(for destination: MessagingDestination) {
         liveTurns[destination.id] = nil
+    }
+
+    func consumeHumanYieldNotice(for destination: MessagingDestination) {
+        humanYieldedDestinationIDs.remove(destination.id)
     }
 }
 
@@ -682,6 +689,12 @@ extension MessagingStore: MessagingStreamRouting {
         guard var turn = liveTurns[key] else { return }
         turn.bindJoin(join)
         guard turn.apply(event) else { return }
+        if turn.phase == .yielded {
+            cancelResumeSync(for: key)
+            humanYieldedDestinationIDs.insert(key)
+            liveTurns[key] = nil
+            return
+        }
         if turn.lifecycleOverlay == .resumeSync || turn.lifecycleOverlay == .reconnecting
             || turn.lifecycleOverlay == .appBackground {
             noteProofOfLife(for: key, turn: &turn)

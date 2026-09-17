@@ -788,6 +788,16 @@ struct MessagingConversationView: View {
                     .background(Color.conduitRaisedSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .accessibilityLabel("Choose responders")
+                .onChange(of: recipients) { _, value in
+                    model.noteRecipientsUpdated(value.sorted())
+                }
+            }
+            if model.showRecipientPickerHint, recipients.isEmpty {
+                Text("Pick who to send to")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+                    .accessibilityIdentifier("messaging.recipient-picker-hint")
             }
             if model.pending != nil, model.pendingDelivery == .uncertain || model.pendingDelivery == .failed {
                 Button(model.pendingDelivery == .failed ? "Retry delivery" : "Check delivery") {
