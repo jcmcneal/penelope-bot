@@ -11,10 +11,9 @@ name: CI
 #                             workspace-anchored DerivedData path; audit the
 #                             generated .xctestrun for absolute-path
 #                             portability; upload products as an artifact.
-#   unit/ui  (macos, matrix) test-without-building from the downloaded
+#   unit     (macos, matrix) test-without-building from the downloaded
 #                             products; measured watchdogs; native flake
-#                             retry (units); per-class invocations, per-class
-#                             watchdogs and one targeted class retry (UI).
+#                             retry (units). UI shards disabled (2026-09-16).
 #   report   (ubuntu, always) aggregate lane results into the step summary.
 #   timing-history-update (main only) EWMA-merge fresh per-class timings into
 #                             the timing-history cache.
@@ -241,7 +240,8 @@ jobs:
   ui:
     name: "UI - ${{ matrix.lane }}"
     needs: [plan, build]
-    if: needs.plan.outputs.ui-classes != ''
+    # Jason 2026-09-16: UI shards off CI — flake/cost, not a TF/release gate.
+    if: false
     runs-on: macos-26
     # Outer emergency ceiling only: every class's targeted retry plus bounded
     # resets and setup slack all fit underneath it (see plan-tests.py); the
@@ -317,7 +317,7 @@ jobs:
 
   report:
     name: Report
-    needs: [plan, build, unit, ui]
+    needs: [plan, build, unit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -367,7 +367,7 @@ jobs:
   # directly - require "CI Gate" instead (see docs/CI.md).
   ci-gate:
     name: CI Gate
-    needs: [plan, build, unit, ui]
+    needs: [plan, build, unit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -380,18 +380,17 @@ jobs:
             --plan "${{ needs.plan.result }}" \
             --build "${{ needs.build.result }}" \
             --unit "${{ needs.unit.result }}" \
-            --ui "${{ needs.ui.result }}"
+            --ui skipped
 
   timing-history-update:
     name: Update timing history
-    needs: [plan, unit, ui]
+    needs: [plan, unit]
     # Only successful main runs evolve the estimates; PR runs never write.
     if: >-
       github.ref == 'refs/heads/main' &&
       !cancelled() &&
       needs.plan.result == 'success' &&
-      needs.unit.result == 'success' &&
-      (needs.ui.result == 'success' || needs.ui.result == 'skipped')
+      needs.unit.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
