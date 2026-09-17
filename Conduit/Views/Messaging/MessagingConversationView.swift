@@ -607,7 +607,7 @@ struct MessagingConversationView: View {
     }
 
     private var liveTurn: MessagingLiveTurn? {
-        owner.liveTurn(for: model.destination)
+        model.turnViewModel.data.liveTurn
     }
 
     private var showsLiveTurnOverlay: Bool {
@@ -739,7 +739,7 @@ struct MessagingConversationView: View {
             .padding(.vertical, 8)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("messaging.run-presence")
-        } else if model.awaitingReply {
+        } else if model.turnViewModel.isLoading {
             HStack {
                 MessagingAwaitingReplyDots()
                 Spacer(minLength: 0)
@@ -792,7 +792,7 @@ struct MessagingConversationView: View {
                     model.noteRecipientsUpdated(value.sorted())
                 }
             }
-            if model.showRecipientPickerHint, recipients.isEmpty {
+            if model.turnViewModel.data.showRecipientPickerHint, recipients.isEmpty {
                 Text("Pick who to send to")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
