@@ -18,11 +18,13 @@ final class MessagingConversationStore: ObservableObject {
     @Published private(set) var pending: PendingMessagingSend?
     @Published private(set) var pendingDelivery: PendingDeliveryState?
     @Published private(set) var sendCooldownActive = false
+    /// Unified turn loading — true from send until terminal wire or hard failure.
     @Published private(set) var awaitingReply = false
     /// Conversation view shortens its history poll while this is true.
     @Published private(set) var prefersUrgentPolling = false
     /// Shown under the composer after `turn.yielded` with `reason=human`.
     @Published private(set) var showRecipientPickerHint = false
+    let turnViewModel: MessagingTurnViewModel
     @Published var draft = ""
     private(set) var destination: MessagingDestination
     private let owner: MessagingStore
@@ -31,14 +33,17 @@ final class MessagingConversationStore: ObservableObject {
     private let draftKey: String
     private var historySubscription: AnyCancellable?
     private var humanYieldSubscription: AnyCancellable?
+    private var liveTurnProjectionSubscription: AnyCancellable?
     private var lastRead = 0
     private var awaitingReplyTimeoutTask: Task<Void, Never>?
     private var urgentPollingTask: Task<Void, Never>?
     private var sendCooldownTask: Task<Void, Never>?
     private var submitTask: Task<Void, Never>?
+    private var cancellables = Set<AnyCancellable>()
 
     init(destination: MessagingDestination, owner: MessagingStore, defaults: UserDefaults = .standard) {
         self.destination = destination; self.owner = owner; self.epoch = owner.generation; self.defaults = defaults
+        turnViewModel = MessagingTurnViewModel(conversationID: destination.conversationID)
         // DM keys remain profile-based so first-send identity resolution never strands a draft.
         draftKey = "conduit.messaging.draft." + ((try? JSONEncoder().encode([owner.capability?.scope ?? "", destination.id]).base64EncodedString()) ?? UUID().uuidString)
         history = owner.historyCache.snapshot(for: destination)
@@ -50,18 +55,30 @@ final class MessagingConversationStore: ObservableObject {
         humanYieldSubscription = owner.$humanYieldedDestinationIDs.sink { [weak self] ids in
             guard let self, ids.contains(self.destination.id) else { return }
             self.owner.consumeHumanYieldNotice(for: self.destination)
-            self.clearAwaitingReply()
             self.showRecipientPickerHint = true
+            self.turnViewModel.settleIfStillLoading()
+            self.syncTurnViewModel()
         }
+        liveTurnProjectionSubscription = owner.$liveTurnProjectionEpoch.sink { [weak self] _ in
+            self?.syncTurnViewModel()
+        }
+        turnViewModel.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }.store(in: &cancellables)
         draft = defaults.string(forKey: draftKey) ?? ""
         if let data = defaults.data(forKey: draftKey + ".pending") {
             pending = try? JSONDecoder().decode(PendingMessagingSend.self, from: data)
-            if pending != nil {
+            if let restored = pending {
                 pendingDelivery = .uncertain
-                owner.startLiveTurn(for: destination, profileID: destination.profileID)
-                beginAwaitingReply()
+                owner.startLiveTurn(
+                    for: destination,
+                    profileID: destination.profileID,
+                    clientTurnID: restored.id
+                )
+                beginTurnMutation(clientTurnID: restored.id)
             }
         }
+        syncTurnViewModel()
     }
 
     deinit {
@@ -82,11 +99,19 @@ final class MessagingConversationStore: ObservableObject {
         if let submitTask { await submitTask.value }
     }
 
+    /// Test seam: await terminal wire settlement for the in-flight send mutation.
+    func waitForTurnSettle() async {
+        await turnViewModel.waitForSettle()
+    }
+
+    var turnIsLoading: Bool { turnViewModel.isLoading }
+
     func saveDraft() { defaults.set(draft, forKey: draftKey) }
 
     func noteRecipientsUpdated(_ recipients: [String]) {
         if !recipients.isEmpty {
             showRecipientPickerHint = false
+            syncTurnViewModel()
         }
     }
 
@@ -102,7 +127,7 @@ final class MessagingConversationStore: ObservableObject {
         let merged = value.map { MessagingHistoryCache.merge(history, incoming: $0) }
         if !MessagingHistoryCache.equivalent(history, merged) { history = merged }
         owner.syncLiveTurn(for: destination, history: merged ?? history)
-        refreshAwaitingReplyFromRuns()
+        syncTurnViewModel()
     }
 
     func load(older: Bool = false) async {
@@ -137,7 +162,7 @@ final class MessagingConversationStore: ObservableObject {
             profileID: destination.profileID ?? recipients.first,
             clientTurnID: value.id
         )
-        beginAwaitingReply()
+        beginTurnMutation(clientTurnID: value.id)
         beginSendCooldown()
         submitTask?.cancel()
         submitTask = Task { await submit(value) }
@@ -155,6 +180,7 @@ final class MessagingConversationStore: ObservableObject {
             guard epoch == owner.generation else { return }
             pendingDelivery = .failed
             owner.markLiveTurnFailed(for: destination, message: detail ?? "Message not delivered.")
+            turnViewModel.failMutation(detail ?? "Message not delivered.")
             clearAwaitingReply()
             clearSendCooldown()
             record(DashboardTicketBridgeError.http(status: status, detail: detail))
@@ -283,17 +309,47 @@ final class MessagingConversationStore: ObservableObject {
         owner.clearLiveTurn(for: destination)
     }
 
+    private func beginTurnMutation(clientTurnID: String) {
+        turnViewModel.beginMutation(
+            clientTurnID: clientTurnID,
+            conversationID: destination.conversationID ?? history?.conversation.id
+        )
+        beginAwaitingReply()
+    }
+
+    private func syncTurnViewModel() {
+        let liveTurn = owner.liveTurn(for: destination)
+        turnViewModel.sync(
+            history: history,
+            liveTurn: liveTurn,
+            recipientHint: showRecipientPickerHint,
+            conversationID: destination.conversationID ?? history?.conversation.id
+        )
+        if turnViewModel.isLoading, liveTurn == nil {
+            turnViewModel.settleIfStillLoading()
+        }
+        if awaitingReply != turnViewModel.isLoading {
+            awaitingReply = turnViewModel.isLoading
+            if !awaitingReply {
+                prefersUrgentPolling = false
+                awaitingReplyTimeoutTask?.cancel()
+                awaitingReplyTimeoutTask = nil
+                urgentPollingTask?.cancel()
+                urgentPollingTask = nil
+            }
+        }
+    }
+
     private func beginAwaitingReply() {
-        awaitingReply = true
+        awaitingReply = turnViewModel.isLoading
         prefersUrgentPolling = true
         awaitingReplyTimeoutTask?.cancel()
         urgentPollingTask?.cancel()
         awaitingReplyTimeoutTask = Task { @MainActor [weak self] in
             do { try await Task.sleep(for: Self.awaitingReplyTimeout) } catch { return }
             guard let self, !Task.isCancelled else { return }
-            if MessagingRunPresence.collapsed(self.history?.runs ?? []).isEmpty {
-                self.clearAwaitingReply()
-            }
+            self.turnViewModel.settleIfStillLoading()
+            self.syncTurnViewModel()
         }
         urgentPollingTask = Task { @MainActor [weak self] in
             do { try await Task.sleep(for: Self.urgentPollWindow) } catch { return }
@@ -303,23 +359,8 @@ final class MessagingConversationStore: ObservableObject {
     }
 
     private func clearAwaitingReply() {
-        awaitingReply = false
-        prefersUrgentPolling = false
-        awaitingReplyTimeoutTask?.cancel()
-        awaitingReplyTimeoutTask = nil
-        urgentPollingTask?.cancel()
-        urgentPollingTask = nil
-    }
-
-    private func refreshAwaitingReplyFromRuns() {
-        guard awaitingReply else { return }
-        if !MessagingRunPresence.collapsed(history?.runs ?? []).isEmpty {
-            clearAwaitingReply()
-            return
-        }
-        if MessagingTurnHistory.completedAssistant(in: history?.messages ?? []) != nil {
-            clearAwaitingReply()
-        }
+        turnViewModel.settleIfStillLoading()
+        syncTurnViewModel()
     }
 
     private func record(_ failure: Error) {

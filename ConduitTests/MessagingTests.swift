@@ -668,20 +668,20 @@ final class MessagingAwaitingReplyTests: XCTestCase {
         await model.load()
         _ = await model.send(recipients: [], text: "ping")
         await model.waitForSubmitCompletion()
-        XCTAssertTrue(model.awaitingReply)
+        XCTAssertTrue(model.turnViewModel.isLoading)
 
         store.handleUnboundStreamEvent(
             .turnYielded(sessionId: "live-sid", reason: "human"),
             join: StreamJoinKey(conversationID: "group-1")
         )
 
-        XCTAssertFalse(model.awaitingReply)
-        XCTAssertTrue(model.showRecipientPickerHint)
+        XCTAssertFalse(model.turnViewModel.isLoading)
+        XCTAssertTrue(model.turnViewModel.data.showRecipientPickerHint)
         model.noteRecipientsUpdated(["swe-id"])
-        XCTAssertFalse(model.showRecipientPickerHint)
+        XCTAssertFalse(model.turnViewModel.data.showRecipientPickerHint)
     }
 
-    func testSendLatchesAwaitingReplyUntilRunsAppear() async {
+    func testSendKeepsTurnLoadingUntilTerminalWire() async {
         var includeRun = false
         let requester = MessagingRequester { path, method, body in
             if path.hasSuffix("/hub") { return self.hub() }
@@ -698,31 +698,39 @@ final class MessagingAwaitingReplyTests: XCTestCase {
                         "id": body?["client_message_id"] ?? "m", "sequence": 2, "author": "user",
                         "body": body?["body"] ?? "", "created_at": 2,
                     ],
+                    "runs": [["id": "r1", "profile": "swe-id", "status": "running", "detail": "", "session_id": "live-sid"]],
                 ]
             }
             return self.conversationJSON(runs: includeRun
-                ? [["id": "r1", "profile": "swe-id", "status": "running", "detail": ""]]
+                ? [["id": "r1", "profile": "swe-id", "status": "running", "detail": "", "session_id": "live-sid"]]
                 : [])
         }
+        let destination = MessagingDestination(conversationID: nil, profileID: "swe-id")
         let store = MessagingStore()
         store.connect(requester: requester, scope: "server")
         await store.refresh()
         let model = MessagingConversationStore(
-            destination: .init(conversationID: nil, profileID: "swe-id"),
+            destination: destination,
             owner: store,
             defaults: UserDefaults(suiteName: UUID().uuidString)!
         )
         await model.load()
-        XCTAssertFalse(model.awaitingReply)
+        XCTAssertFalse(model.turnViewModel.isLoading)
         let ok = await model.send(recipients: [], text: "ping")
         XCTAssertTrue(ok)
-        XCTAssertTrue(model.awaitingReply)
-        XCTAssertTrue(model.prefersUrgentPolling)
+        XCTAssertTrue(model.turnViewModel.isLoading)
         await model.waitForSubmitCompletion()
         includeRun = true
         await model.load()
-        XCTAssertFalse(model.awaitingReply)
-        XCTAssertFalse(model.prefersUrgentPolling)
+        XCTAssertNotNil(store.liveTurn(for: destination))
+        XCTAssertTrue(model.turnViewModel.isLoading, "queued runs alone must not settle the send mutation")
+
+        store.handleUnboundStreamEvent(
+            .messageComplete(sessionId: "live-sid", messageId: "assistant-1", content: "pong", reasoning: nil),
+            join: StreamJoinKey(conversationID: "dm", runID: "r1", profileID: "swe-id")
+        )
+        XCTAssertNil(store.liveTurn(for: destination))
+        XCTAssertFalse(model.turnViewModel.isLoading)
     }
 
     func testHardRejectionKeepsPendingBubbleAndMarksFailed() async {
@@ -748,7 +756,7 @@ final class MessagingAwaitingReplyTests: XCTestCase {
         await model.waitForSubmitCompletion()
         XCTAssertNotNil(model.pending)
         XCTAssertEqual(model.pendingDelivery, .failed)
-        XCTAssertFalse(model.awaitingReply)
+        XCTAssertFalse(model.turnViewModel.isLoading)
         XCTAssertNotNil(model.error)
         XCTAssertFalse(model.composerSendBlocked)
     }
@@ -825,9 +833,9 @@ final class MessagingAwaitingReplyTests: XCTestCase {
             defaults: UserDefaults(suiteName: UUID().uuidString)!
         )
         _ = await model.send(recipients: [], text: "hang")
-        XCTAssertTrue(model.awaitingReply)
+        XCTAssertTrue(model.turnViewModel.isLoading)
         try? await Task.sleep(for: .milliseconds(200))
-        XCTAssertFalse(model.awaitingReply)
+        XCTAssertFalse(model.turnViewModel.isLoading)
     }
 
     func testRestoredPendingStartsAwaitingReply() async {
@@ -844,10 +852,10 @@ final class MessagingAwaitingReplyTests: XCTestCase {
         let dm = MessagingDestination(conversationID: nil, profileID: "swe-id")
         let first = MessagingConversationStore(destination: dm, owner: store, defaults: defaults)
         _ = await first.send(recipients: [], text: "keep")
-        XCTAssertTrue(first.awaitingReply)
+        XCTAssertTrue(first.turnViewModel.isLoading)
         let restored = MessagingConversationStore(destination: dm, owner: store, defaults: defaults)
         XCTAssertNotNil(restored.pending)
-        XCTAssertTrue(restored.awaitingReply)
+        XCTAssertTrue(restored.turnViewModel.isLoading)
     }
 
     private func capability(server: String = "server", principal: String = "alice", version: Int = 1) -> [String: Any] {
