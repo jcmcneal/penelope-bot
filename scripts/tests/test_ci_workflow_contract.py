@@ -62,6 +62,17 @@ class WorkflowContractTests(unittest.TestCase):
             out.append(line)
         return "\n".join(out)
 
+    def test_unit_job_is_a_single_non_matrix_lane(self):
+        text = self._workflow_text()
+        unit = self._job_text("unit")
+        self.assertIn("name: Unit tests", unit)
+        self.assertNotIn("strategy:", unit)
+        self.assertNotIn("matrix:", unit)
+        self.assertIn("needs.plan.outputs.unit-lane", unit)
+        self.assertIn("needs.plan.outputs.unit-classes", unit)
+        self.assertIn("--kind unit", unit)
+        self.assertIn("--iterations 3", unit)
+
     def test_ui_job_is_a_dynamic_matrix_with_per_class_runner(self):
         text = self._workflow_text()
         ui = self._job_text("ui")

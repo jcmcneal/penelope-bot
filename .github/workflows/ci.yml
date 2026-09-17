@@ -11,9 +11,9 @@ name: CI
 #                             workspace-anchored DerivedData path; audit the
 #                             generated .xctestrun for absolute-path
 #                             portability; upload products as an artifact.
-#   unit     (macos, matrix) test-without-building from the downloaded
-#                             products; measured watchdogs; native flake
-#                             retry (units). UI shards disabled (2026-09-16).
+#   unit     (macos, once)    full unit suite test-without-building from the
+#                             downloaded products; measured watchdogs; native
+#                             flake retry. UI shards disabled (2026-09-16).
 #   report   (ubuntu, always) aggregate lane results into the step summary.
 #   timing-history-update (main only) EWMA-merge fresh per-class timings into
 #                             the timing-history cache.
@@ -51,8 +51,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      matrix: "${{ steps.plan.outputs.matrix }}"
       lane-count: "${{ steps.plan.outputs.lane-count }}"
+      unit-lane: "${{ steps.plan.outputs.unit-lane }}"
+      unit-target: "${{ steps.plan.outputs.unit-target }}"
+      unit-classes: "${{ steps.plan.outputs.unit-classes }}"
+      unit-class-estimates: "${{ steps.plan.outputs.unit-class-estimates }}"
+      unit-predicted: "${{ steps.plan.outputs.unit-predicted }}"
+      unit-timeout: "${{ steps.plan.outputs.unit-timeout }}"
+      unit-job-timeout-min: "${{ steps.plan.outputs.unit-job-timeout-min }}"
       ui-matrix: "${{ steps.plan.outputs.ui-matrix }}"
       ui-classes: "${{ steps.plan.outputs.ui-classes }}"
     steps:
@@ -94,8 +100,14 @@ jobs:
             --matrix-out ci-artifacts/unit-matrix.json \
             --ui-matrix-out ci-artifacts/ui-matrix.json \
             --summary-out ci-artifacts/plan-summary.md
-          echo "matrix=$(jq -c . ci-artifacts/unit-matrix.json)" >> "$GITHUB_OUTPUT"
           echo "lane-count=$(jq -r '.lane_count' ci-artifacts/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "unit-lane=$(jq -r '.unit_lanes[0].lane' ci-artifacts/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "unit-target=$(jq -r '.unit_lanes[0].target' ci-artifacts/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "unit-classes=$(jq -r '.unit_lanes[0].classes | join(",")' ci-artifacts/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "unit-class-estimates=$(jq -r '[.unit_lanes[0].classes[] as $c | "\($c)=\(.estimates[$c])"] | join(",")' ci-artifacts/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "unit-predicted=$(jq -r '.unit_lanes[0].predicted_s' ci-artifacts/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "unit-timeout=$(jq -r '.unit_lanes[0].timeout_s' ci-artifacts/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "unit-job-timeout-min=$(jq -r '.unit_lanes[0].job_timeout_min' ci-artifacts/plan.json)" >> "$GITHUB_OUTPUT"
           echo "ui-matrix=$(jq -c . ci-artifacts/ui-matrix.json)" >> "$GITHUB_OUTPUT"
           echo "ui-classes=$(jq -r '[.ui_lanes[].classes[]] | join(",")' ci-artifacts/plan.json)" >> "$GITHUB_OUTPUT"
 
@@ -166,15 +178,12 @@ jobs:
           if-no-files-found: ignore
 
   unit:
-    name: "Unit - ${{ matrix.lane }}"
+    name: Unit tests
     needs: [plan, build]
     runs-on: macos-26
     # Outer emergency ceiling only: attempt 1 + attempt 2 + a full isolation
     # pass plus bounded resets all fit underneath it (see plan-tests.py).
-    timeout-minutes: ${{ matrix.job_timeout_min }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.unit-job-timeout-min) }}
     steps:
       - uses: actions/checkout@v7
 
@@ -195,20 +204,20 @@ jobs:
           python3 scripts/plan-tests.py audit-xctestrun \
             --xctestrun "$XCRUN_FILE" --workspace-root "$GITHUB_WORKSPACE"
 
-      - name: Run unit lane
-        # Matrix values enter through the environment, never through bash
+      - name: Run unit suite
+        # Planned values enter through the environment, never through bash
         # template interpolation, so even a hostile class name cannot become
         # code execution in the runner.
         env:
           CLASS_TIMEOUT_MIN_S: "180"
           CLASS_TIMEOUT_MULTIPLIER: "4.0"
           CONDUIT_PERF_TRACE: "1"
-          LANE_NAME: "${{ matrix.lane }}"
-          LANE_TARGET: "${{ matrix.target }}"
-          LANE_CLASSES: "${{ matrix.classes }}"
-          LANE_CLASS_ESTIMATES: "${{ matrix.class_estimates }}"
-          LANE_PREDICTED: "${{ matrix.predicted_s }}"
-          LANE_TIMEOUT: "${{ matrix.timeout_s }}"
+          LANE_NAME: "${{ needs.plan.outputs.unit-lane }}"
+          LANE_TARGET: "${{ needs.plan.outputs.unit-target }}"
+          LANE_CLASSES: "${{ needs.plan.outputs.unit-classes }}"
+          LANE_CLASS_ESTIMATES: "${{ needs.plan.outputs.unit-class-estimates }}"
+          LANE_PREDICTED: "${{ needs.plan.outputs.unit-predicted }}"
+          LANE_TIMEOUT: "${{ needs.plan.outputs.unit-timeout }}"
         run: |
           bash scripts/ci-test-lane.sh \
             --kind unit \
@@ -232,7 +241,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lane-${{ matrix.lane }}
+          name: lane-${{ needs.plan.outputs.unit-lane }}
           path: ci-lane/
           retention-days: 7
           if-no-files-found: error
@@ -362,9 +371,8 @@ jobs:
             cat ci-report/summary.md >> "$GITHUB_STEP_SUMMARY"
           fi
 
-  # Single stable branch-protection check. The number of dynamic unit lanes
-  # can change run to run, so individual lane jobs must never be required
-  # directly - require "CI Gate" instead (see docs/CI.md).
+  # Single stable branch-protection check. Individual lane jobs must never be
+  # required directly - require "CI Gate" instead (see docs/CI.md).
   ci-gate:
     name: CI Gate
     needs: [plan, build, unit]
