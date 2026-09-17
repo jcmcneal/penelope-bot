@@ -63,6 +63,25 @@ final class MessagingTranscriptProjectionTests: XCTestCase {
         XCTAssertEqual(projection.entriesByID["first"]?.source.body, "Hello @bot")
     }
 
+    func testInternalDestinationRoutingBodyIsHiddenFromTranscript() {
+        var projection = MessagingTranscriptProjection()
+        let routingEcho = message(
+            "routing",
+            sequence: 2,
+            body: "@a454f9edec9d5de0b6560bb155803bf2",
+            author: "user"
+        )
+        projection.update(messages: [message("first"), routingEcho, message("reply", sequence: 3, author: "bot")], profiles: profiles)
+
+        XCTAssertNil(projection.entriesByID["routing"])
+        XCTAssertEqual(projection.messages.map(\.id), ["first", "reply"])
+    }
+
+    func testNormalMentionTextIsNotTreatedAsInternalDestination() {
+        XCTAssertFalse(MessagingMentionDisplay.isInternalDestinationBody("Hello @bot"))
+        XCTAssertFalse(MessagingMentionDisplay.isInternalDestinationBody("@swe-id"))
+    }
+
     func testRemovedMessagesAreEvictedIncludingEmptyRefresh() {
         var projection = MessagingTranscriptProjection()
         let retained = message("second", sequence: 2)

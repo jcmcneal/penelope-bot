@@ -695,6 +695,11 @@ extension MessagingStore: MessagingStreamRouting {
             liveTurns[key] = nil
             return
         }
+        if turn.settledTextInHistory && turn.tools.isEmpty && !turn.showsTurnLostChrome {
+            cancelResumeSync(for: key)
+            liveTurns[key] = nil
+            return
+        }
         if turn.lifecycleOverlay == .resumeSync || turn.lifecycleOverlay == .reconnecting
             || turn.lifecycleOverlay == .appBackground {
             noteProofOfLife(for: key, turn: &turn)
