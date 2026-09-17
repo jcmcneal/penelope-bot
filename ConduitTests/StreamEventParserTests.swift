@@ -696,6 +696,17 @@ final class StreamEventParserTests: XCTestCase {
         XCTAssertEqual(sessionId, "live-sid")
     }
 
+    func testTurnYieldedHuman() {
+        let event = parse(#"""
+        {"type": "turn.yielded", "session_id": "live-sid", "conversation_id": "c1", "run_id": "r1", "profile_id": "swe-id", "payload": {"reason": "human"}}
+        """#)
+        guard case .turnYielded(let sessionId, let reason) = event else {
+            return XCTFail("Expected turnYielded, got \(String(describing: event))")
+        }
+        XCTAssertEqual(sessionId, "live-sid")
+        XCTAssertEqual(reason, "human")
+    }
+
     func testJoinKeyPrefersTopLevelIds() {
         let params = AnyCodable.from([
             "type": "message.delta",

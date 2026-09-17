@@ -51,7 +51,7 @@ final class MessagingLiveTurnTests: XCTestCase {
     func testInactiveTurnIgnoresAnUnseenSessionId() {
         var turn = MessagingLiveTurn(destinationID: "dm:swe", profileID: "swe-id")
         _ = turn.apply(.messageDelta(sessionId: "ours", text: "Hi"))
-        turn.markDropped()
+        _ = turn.apply(.messageInterrupted(sessionId: "ours"))
         XCTAssertFalse(turn.apply(.messageDelta(sessionId: "other", text: "leak")))
         XCTAssertEqual(turn.text, "Hi")
     }
@@ -75,14 +75,15 @@ final class MessagingLiveTurnTests: XCTestCase {
         XCTAssertEqual(turn.phase, .completing)
     }
 
-    func testDroppedStreamKeepsPartialText() {
+    func testTransportInterruptKeepsPartialTextWithoutDropCopy() {
         var turn = MessagingLiveTurn(destinationID: "dm:swe", profileID: "swe-id")
         _ = turn.apply(.messageDelta(sessionId: "s", text: "half"))
         _ = turn.apply(.toolStart(sessionId: "s", toolName: "read", toolInput: "file"))
-        turn.markDropped()
-        XCTAssertEqual(turn.phase, .interrupted)
+        turn.markTransportInterrupted()
+        XCTAssertEqual(turn.phase, .usingTool)
         XCTAssertEqual(turn.text, "half")
-        XCTAssertEqual(turn.tools.first?.status, .failed)
+        XCTAssertEqual(turn.tools.first?.status, .running)
+        XCTAssertNil(turn.errorMessage)
     }
 
     func testRunSessionIdIsOptional() throws {
@@ -108,6 +109,21 @@ final class MessagingLiveTurnTests: XCTestCase {
         ])
         XCTAssertFalse(turn.needsFastHistorySettle)
     }
+
+    func testHumanYieldSettlesEmptyShellTurn() {
+        var turn = MessagingLiveTurn(destinationID: "conversation:c1", profileID: "swe-id")
+        XCTAssertTrue(turn.apply(.turnYielded(sessionId: "s", reason: "human")))
+        XCTAssertEqual(turn.phase, .yielded)
+        XCTAssertFalse(turn.phase.isActive)
+        XCTAssertFalse(turn.showsStreamingText)
+        XCTAssertTrue(turn.tools.isEmpty)
+    }
+
+    func testNonHumanYieldIsIgnored() {
+        var turn = MessagingLiveTurn(destinationID: "conversation:c1", profileID: "swe-id")
+        XCTAssertTrue(turn.apply(.turnYielded(sessionId: "s", reason: "selector")))
+        XCTAssertEqual(turn.phase, .starting)
+    }
 }
 
 @MainActor
@@ -124,7 +140,7 @@ final class MessagingStreamRoutingTests: XCTestCase {
         XCTAssertEqual(store.liveTurn(for: destination)?.sessionIDs, ["hidden-sess"])
     }
 
-    func testDisconnectMarksTheLiveTurnInterrupted() {
+    func testDisconnectDoesNotMarkTransportInterruptAsTurnFailure() {
         let store = MessagingStore()
         let destination = MessagingDestination(conversationID: nil, profileID: "swe-id")
         store.startLiveTurn(for: destination, profileID: "swe-id")
@@ -132,9 +148,12 @@ final class MessagingStreamRoutingTests: XCTestCase {
             .messageDelta(sessionId: "s", text: "partial"),
             join: StreamJoinKey(profileID: "swe-id")
         )
-        store.handleStreamDisconnected()
-        XCTAssertEqual(store.liveTurn(for: destination)?.phase, .interrupted)
-        XCTAssertEqual(store.liveTurn(for: destination)?.text, "partial")
+        store.handleStreamDisconnected(reason: .background)
+        let turn = store.liveTurn(for: destination)
+        XCTAssertEqual(turn?.phase, .streaming)
+        XCTAssertEqual(turn?.text, "partial")
+        XCTAssertNil(turn?.errorMessage)
+        XCTAssertEqual(turn?.lifecycleOverlay, .appBackground)
     }
 
     func testRunsWithoutSessionIdDoNotMintALiveTurn() {
@@ -258,6 +277,23 @@ final class MessagingStreamRoutingTests: XCTestCase {
         XCTAssertEqual(store.liveTurn(for: designer)?.sessionIDs ?? [], [])
     }
 
+    func testHumanYieldDropsEmptyLiveTurnOverlay() {
+        let store = MessagingStore()
+        let destination = MessagingDestination(conversationID: "c1", profileID: nil)
+        store.startLiveTurn(for: destination, profileID: "swe-id")
+        XCTAssertNotNil(store.liveTurn(for: destination))
+
+        store.handleUnboundStreamEvent(
+            .turnYielded(sessionId: "live-sid", reason: "human"),
+            join: StreamJoinKey(conversationID: "c1", runID: "r1", profileID: "swe-id")
+        )
+
+        XCTAssertNil(store.liveTurn(for: destination), "yielded shell overlay must drop immediately")
+        XCTAssertTrue(store.humanYieldedDestinationIDs.contains(destination.id))
+        store.consumeHumanYieldNotice(for: destination)
+        XCTAssertFalse(store.humanYieldedDestinationIDs.contains(destination.id))
+    }
+
     func testSendReceiptBindsSessionBeforeFirstToken() {
         let store = MessagingStore()
         let destination = MessagingDestination(conversationID: "c1", profileID: "swe-id")
@@ -357,7 +393,7 @@ final class MessagingStreamRoutingTests: XCTestCase {
         var turn = MessagingLiveTurn(destinationID: "dm:default", profileID: "default")
         _ = turn.apply(.toolStart(sessionId: "6cea0e91", toolName: "team_inbox", toolInput: nil))
         _ = turn.apply(.messageDelta(sessionId: "6cea0e91", text: String(repeating: "x", count: 200)))
-        turn.markDropped()
+        turn.markTransportInterrupted()
         turn.absorbHistory(Self.frustratingTurnHistory.messages)
         XCTAssertEqual(turn.text, Self.hermesReply)
         XCTAssertTrue(turn.settledTextInHistory)
@@ -386,7 +422,7 @@ final class MessagingStreamRoutingTests: XCTestCase {
             content: Self.hermesReply,
             reasoning: nil
         ))
-        store.handleStreamDisconnected()
+        store.handleStreamDisconnected(reason: .foregroundTransport)
 
         XCTAssertEqual(store.liveTurn(for: destination)?.tools ?? [], [])
         XCTAssertNotEqual(store.liveTurn(for: destination)?.text, Self.hermesReply)

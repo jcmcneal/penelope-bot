@@ -21,6 +21,8 @@ final class MessagingConversationStore: ObservableObject {
     @Published private(set) var awaitingReply = false
     /// Conversation view shortens its history poll while this is true.
     @Published private(set) var prefersUrgentPolling = false
+    /// Shown under the composer after `turn.yielded` with `reason=human`.
+    @Published private(set) var showRecipientPickerHint = false
     @Published var draft = ""
     private(set) var destination: MessagingDestination
     private let owner: MessagingStore
@@ -28,6 +30,7 @@ final class MessagingConversationStore: ObservableObject {
     private let defaults: UserDefaults
     private let draftKey: String
     private var historySubscription: AnyCancellable?
+    private var humanYieldSubscription: AnyCancellable?
     private var lastRead = 0
     private var awaitingReplyTimeoutTask: Task<Void, Never>?
     private var urgentPollingTask: Task<Void, Never>?
@@ -43,6 +46,12 @@ final class MessagingConversationStore: ObservableObject {
             guard let self, change.key == nil || change.key == self.destination.id else { return }
             guard change.history == nil || self.epoch == self.owner.generation else { return }
             self.adopt(change.history)
+        }
+        humanYieldSubscription = owner.$humanYieldedDestinationIDs.sink { [weak self] ids in
+            guard let self, ids.contains(self.destination.id) else { return }
+            self.owner.consumeHumanYieldNotice(for: self.destination)
+            self.clearAwaitingReply()
+            self.showRecipientPickerHint = true
         }
         draft = defaults.string(forKey: draftKey) ?? ""
         if let data = defaults.data(forKey: draftKey + ".pending") {
@@ -74,6 +83,12 @@ final class MessagingConversationStore: ObservableObject {
     }
 
     func saveDraft() { defaults.set(draft, forKey: draftKey) }
+
+    func noteRecipientsUpdated(_ recipients: [String]) {
+        if !recipients.isEmpty {
+            showRecipientPickerHint = false
+        }
+    }
 
     var historyPollInterval: Duration {
         if owner.liveTurn(for: destination)?.needsFastHistorySettle == true {
@@ -119,7 +134,8 @@ final class MessagingConversationStore: ObservableObject {
         defaults.set(try? JSONEncoder().encode(value), forKey: draftKey + ".pending")
         owner.startLiveTurn(
             for: destination,
-            profileID: destination.profileID ?? recipients.first
+            profileID: destination.profileID ?? recipients.first,
+            clientTurnID: value.id
         )
         beginAwaitingReply()
         beginSendCooldown()
@@ -203,6 +219,12 @@ final class MessagingConversationStore: ObservableObject {
             await load(); await owner.refreshConversations(force: true)
         } catch { record(error) }
     }
+    func retryLostTurn() async {
+        owner.retryLostTurn(for: destination)
+        prefersUrgentPolling = true
+        await load()
+    }
+
     func cancelRun(_ id: String) async {
         guard canWrite, let service = owner.service else { return }
         struct Receipt: Decodable { let ok: Bool }

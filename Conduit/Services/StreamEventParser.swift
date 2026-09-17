@@ -188,6 +188,10 @@ enum StreamEventParser {
         case "messaging.run.start":
             return .messagingRunStart(sessionId: sessionId)
 
+        case "turn.yielded":
+            let reason = payload?["reason"]?.stringValue ?? obj["reason"]?.stringValue
+            return .turnYielded(sessionId: sessionId, reason: reason)
+
         default:
             return .unparsed(payload: obj.mapValues { $0.anyValue })
         }
