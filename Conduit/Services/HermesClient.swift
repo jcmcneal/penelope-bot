@@ -193,6 +193,8 @@ enum StreamEvent {
     case delegateAgent(sessionId: String, activity: DelegateAgentActivity)
     /// Bind a bot overlay to the conversation/run join keys before tokens arrive.
     case messagingRunStart(sessionId: String)
+    /// Terminal settle when bot-coms yields without dispatching (e.g. empty @ To).
+    case turnYielded(sessionId: String, reason: String?)
     case unparsed(payload: [String: Any])
 
     var sessionID: String {
@@ -208,7 +210,8 @@ enum StreamEvent {
                 .clarifyExpire(let sessionId, _), .approval(let sessionId, _),
                 .contextUpdate(let sessionId, _, _, _), .cwdUpdate(let sessionId, _),
                 .modelUpdate(let sessionId, _, _), .agentCount(let sessionId, _),
-                .delegateAgent(let sessionId, _), .messagingRunStart(let sessionId):
+                .delegateAgent(let sessionId, _), .messagingRunStart(let sessionId),
+                .turnYielded(let sessionId, _):
             return sessionId
         case .unparsed:
             return ""

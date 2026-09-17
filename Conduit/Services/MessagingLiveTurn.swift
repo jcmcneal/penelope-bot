@@ -12,11 +12,13 @@ struct MessagingLiveTurn: Equatable {
         case completing
         case interrupted
         case failed
+        /// bot-coms yielded without dispatching a bot (e.g. empty @ To).
+        case yielded
 
         var isActive: Bool {
             switch self {
             case .starting, .streaming, .usingTool, .completing: return true
-            case .interrupted, .failed: return false
+            case .interrupted, .failed, .yielded: return false
             }
         }
     }
@@ -168,6 +170,12 @@ struct MessagingLiveTurn: Equatable {
         case .toolFailed(_, let name, let message):
             completeTool(name: name, output: message, status: .failed)
             phase = .usingTool
+        case .turnYielded(_, let reason):
+            guard reason == "human" else { break }
+            tools.removeAll()
+            errorMessage = nil
+            phase = .yielded
+            noteProofOfLife()
         case .sessionInfo, .sessionTitle, .reviewSummary, .clarify, .clarifyExpire,
                 .approval, .contextUpdate, .cwdUpdate, .modelUpdate, .agentCount,
                 .delegateAgent, .messagingRunStart, .unparsed:

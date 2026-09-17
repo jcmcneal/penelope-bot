@@ -109,6 +109,21 @@ final class MessagingLiveTurnTests: XCTestCase {
         ])
         XCTAssertFalse(turn.needsFastHistorySettle)
     }
+
+    func testHumanYieldSettlesEmptyShellTurn() {
+        var turn = MessagingLiveTurn(destinationID: "conversation:c1", profileID: "swe-id")
+        XCTAssertTrue(turn.apply(.turnYielded(sessionId: "s", reason: "human")))
+        XCTAssertEqual(turn.phase, .yielded)
+        XCTAssertFalse(turn.phase.isActive)
+        XCTAssertFalse(turn.showsStreamingText)
+        XCTAssertTrue(turn.tools.isEmpty)
+    }
+
+    func testNonHumanYieldIsIgnored() {
+        var turn = MessagingLiveTurn(destinationID: "conversation:c1", profileID: "swe-id")
+        XCTAssertTrue(turn.apply(.turnYielded(sessionId: "s", reason: "selector")))
+        XCTAssertEqual(turn.phase, .starting)
+    }
 }
 
 @MainActor
@@ -260,6 +275,23 @@ final class MessagingStreamRoutingTests: XCTestCase {
         XCTAssertEqual(store.liveTurn(for: swe)?.sessionIDs, ["runtime-unknown"])
         XCTAssertEqual(store.liveTurn(for: designer)?.text, "")
         XCTAssertEqual(store.liveTurn(for: designer)?.sessionIDs ?? [], [])
+    }
+
+    func testHumanYieldDropsEmptyLiveTurnOverlay() {
+        let store = MessagingStore()
+        let destination = MessagingDestination(conversationID: "c1", profileID: nil)
+        store.startLiveTurn(for: destination, profileID: "swe-id")
+        XCTAssertNotNil(store.liveTurn(for: destination))
+
+        store.handleUnboundStreamEvent(
+            .turnYielded(sessionId: "live-sid", reason: "human"),
+            join: StreamJoinKey(conversationID: "c1", runID: "r1", profileID: "swe-id")
+        )
+
+        XCTAssertNil(store.liveTurn(for: destination), "yielded shell overlay must drop immediately")
+        XCTAssertTrue(store.humanYieldedDestinationIDs.contains(destination.id))
+        store.consumeHumanYieldNotice(for: destination)
+        XCTAssertFalse(store.humanYieldedDestinationIDs.contains(destination.id))
     }
 
     func testSendReceiptBindsSessionBeforeFirstToken() {
