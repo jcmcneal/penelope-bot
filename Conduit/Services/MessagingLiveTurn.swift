@@ -141,7 +141,7 @@ struct MessagingLiveTurn: Equatable {
                 self.reasoning = reasoning
             }
             phase = tools.contains(where: { $0.status == .running }) ? .usingTool : .completing
-            noteProofOfLife()
+            settleFinalAnswerFromStream()
         case .messageError(_, let message):
             errorMessage = message
             failRunningTools(message)
@@ -206,6 +206,16 @@ struct MessagingLiveTurn: Equatable {
         if lifecycleOverlay == .resumedStream {
             lifecycleOverlay = nil
         }
+    }
+
+    /// Final streamed content is on screen; hide Responding / reconnect / typing chrome
+    /// without waiting for the next history poll (same COMPLETE-settle family as yield).
+    private mutating func settleFinalAnswerFromStream() {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard !tools.contains(where: { $0.status == .running }) else { return }
+        settledTextInHistory = true
+        noteProofOfLife()
     }
 
     /// Transport tear-down (background or brief WS sleep) — not user-visible failure.
