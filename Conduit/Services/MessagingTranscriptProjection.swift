@@ -35,6 +35,9 @@ struct MessagingTranscriptProjection {
         var nextMessages: [ChatMessage] = []
         nextMessages.reserveCapacity(incoming.count)
         for source in incoming {
+            if MessagingMentionDisplay.isInternalDestinationBody(source.body) {
+                continue
+            }
             let entry: Entry
             if !profilesChanged, let existing = entriesByID[source.id], existing.source == source {
                 entry = existing

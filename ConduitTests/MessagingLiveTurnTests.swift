@@ -124,6 +124,37 @@ final class MessagingLiveTurnTests: XCTestCase {
         XCTAssertTrue(turn.apply(.turnYielded(sessionId: "s", reason: "selector")))
         XCTAssertEqual(turn.phase, .starting)
     }
+
+    func testMessageCompleteSettlesLiveChromeWithoutHistoryPoll() {
+        var turn = MessagingLiveTurn(destinationID: "dm:swe", profileID: "swe-id")
+        turn.lifecycleOverlay = .reconnecting
+        _ = turn.apply(.messageDelta(sessionId: "s", text: "Howdy — what can I help with?"))
+        _ = turn.apply(.messageComplete(
+            sessionId: "s",
+            messageId: "m1",
+            content: "Howdy — what can I help with?",
+            reasoning: nil
+        ))
+        XCTAssertTrue(turn.settledTextInHistory)
+        XCTAssertFalse(turn.showsStreamingText)
+        XCTAssertFalse(turn.showsSoftReconnectChrome)
+        XCTAssertNil(turn.lifecycleOverlay)
+        XCTAssertEqual(turn.phase, .completing)
+    }
+
+    func testMessageCompleteDoesNotSettleWhileToolsAreRunning() {
+        var turn = MessagingLiveTurn(destinationID: "dm:swe", profileID: "swe-id")
+        _ = turn.apply(.toolStart(sessionId: "s", toolName: "web_search", toolInput: "q="))
+        _ = turn.apply(.messageComplete(
+            sessionId: "s",
+            messageId: "m1",
+            content: "Done",
+            reasoning: nil
+        ))
+        XCTAssertFalse(turn.settledTextInHistory)
+        XCTAssertTrue(turn.showsStreamingText)
+        XCTAssertEqual(turn.phase, .usingTool)
+    }
 }
 
 @MainActor
@@ -195,6 +226,25 @@ final class MessagingStreamRoutingTests: XCTestCase {
         XCTAssertEqual(turn?.tools.first?.name, "web_search")
         XCTAssertEqual(turn?.tools.first?.status, .complete)
         XCTAssertEqual(turn?.phase, .completing)
+        XCTAssertTrue(turn?.settledTextInHistory == true)
+        XCTAssertFalse(turn?.showsStreamingText == true)
+    }
+
+    func testMessageCompleteDropsReconnectingOverlayForSimpleReply() {
+        let store = MessagingStore()
+        let destination = MessagingDestination(conversationID: nil, profileID: "swe-id")
+        store.startLiveTurn(for: destination, profileID: "swe-id")
+        store.handleScenePhase(.active, gatewaySessionValid: true)
+        store.handleUnboundStreamEvent(
+            .messageComplete(
+                sessionId: "s",
+                messageId: "m1",
+                content: "Howdy — what can I help with?",
+                reasoning: nil
+            ),
+            join: StreamJoinKey(profileID: "swe-id")
+        )
+        XCTAssertNil(store.liveTurn(for: destination))
     }
 
     func testMismatchedSessionIdDoesNotCrossWireAnotherConversation() {
@@ -455,8 +505,10 @@ final class MessagingStreamRoutingTests: XCTestCase {
             reasoning: nil
         ))
 
-        XCTAssertEqual(store.liveTurn(for: destination)?.text, Self.hermesReply)
-        XCTAssertEqual(store.liveTurn(for: destination)?.tools ?? [], [])
+        XCTAssertNil(
+            store.liveTurn(for: destination),
+            "message.complete with final text must drop overlay without waiting for history"
+        )
 
         store.syncLiveTurn(for: destination, history: Self.frustratingTurnHistory)
         XCTAssertNil(store.liveTurn(for: destination))

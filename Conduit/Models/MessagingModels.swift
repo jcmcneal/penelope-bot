@@ -79,6 +79,17 @@ enum MessagingMentionDisplay {
     private static let mentionPattern = try! NSRegularExpression(
         pattern: #"@\{([A-Za-z0-9_.-]+)\}|@([A-Za-z0-9_.-]+)"#
     )
+    private static let internalDestinationBodyPattern = try! NSRegularExpression(
+        pattern: #"^@(?:\{([0-9a-fA-F]{16,})\}|([0-9a-fA-F]{16,}))$"#
+    )
+
+    /// Routing echoes whose entire body is an internal `@<hex-id>` destination token.
+    static func isInternalDestinationBody(_ body: String) -> Bool {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        return internalDestinationBodyPattern.firstMatch(in: trimmed, range: range) != nil
+    }
 
     static func rewriteBody(_ body: String, profiles: [MessagingProfile]) -> String {
         guard !body.isEmpty, !profiles.isEmpty else { return body }
