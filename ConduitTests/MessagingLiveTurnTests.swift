@@ -376,6 +376,64 @@ final class MessagingStreamRoutingTests: XCTestCase {
         XCTAssertTrue(store.humanYieldedDestinationIDs.contains(destination.id))
     }
 
+    func testCompletedAssistantHistoryClearsCatchingUpWithoutYield() {
+        let store = MessagingStore()
+        let destination = MessagingDestination(
+            conversationID: "06492b61-7bda-43ca-b754-c702335cbee2",
+            profileID: nil
+        )
+        store.startLiveTurn(
+            for: destination,
+            profileID: "a454f9edec9d5de0b6560bb155803bf2",
+            clientTurnID: "turn-send"
+        )
+        store.handleStreamDisconnected(reason: .foregroundTransport)
+        XCTAssertEqual(store.liveTurn(for: destination)?.lifecycleOverlay, .resumeSync)
+
+        store.syncLiveTurn(for: destination, history: Self.frustratingTurnHistory)
+
+        XCTAssertNil(
+            store.liveTurn(for: destination),
+            "COMPLETE assistant in history must drop Catching up without turn.yielded"
+        )
+    }
+
+    func testCompletedAssistantClearsCatchingUpEvenWithStaleRunningRun() {
+        let store = MessagingStore()
+        let destination = MessagingDestination(
+            conversationID: "06492b61-7bda-43ca-b754-c702335cbee2",
+            profileID: nil
+        )
+        store.startLiveTurn(
+            for: destination,
+            profileID: "a454f9edec9d5de0b6560bb155803bf2",
+            clientTurnID: "turn-send"
+        )
+        store.handleStreamDisconnected(reason: .foregroundTransport)
+
+        let base = Self.frustratingTurnHistory
+        let history = MessagingHistory(
+            conversation: base.conversation,
+            messages: base.messages,
+            runs: [
+                MessagingRun(
+                    id: "stale-run",
+                    profile: "a454f9edec9d5de0b6560bb155803bf2",
+                    status: "running",
+                    detail: "",
+                    sessionID: "s1"
+                )
+            ],
+            before: nil
+        )
+        store.syncLiveTurn(for: destination, history: history)
+
+        let turn = store.liveTurn(for: destination)
+        XCTAssertNotNil(turn, "stale running run keeps shell until run clears")
+        XCTAssertNil(turn?.lifecycleOverlay, "Catching up must clear once assistant is durable")
+        XCTAssertTrue(turn?.settledTextInHistory == true)
+    }
+
     func testSendReceiptBindsSessionBeforeFirstToken() {
         let store = MessagingStore()
         let destination = MessagingDestination(conversationID: "c1", profileID: "swe-id")
