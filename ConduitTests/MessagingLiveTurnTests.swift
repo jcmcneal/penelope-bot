@@ -344,6 +344,38 @@ final class MessagingStreamRoutingTests: XCTestCase {
         XCTAssertFalse(store.humanYieldedDestinationIDs.contains(destination.id))
     }
 
+    func testHumanYieldWithEmptyJoinSettlesEmptyAutoShell() {
+        let store = MessagingStore()
+        let destination = MessagingDestination(conversationID: "mora-1", profileID: nil)
+        store.startLiveTurn(for: destination, profileID: nil)
+        XCTAssertNotNil(store.liveTurn(for: destination))
+        XCTAssertTrue(store.liveTurn(for: destination)?.sessionIDs.isEmpty == true)
+
+        store.handleUnboundStreamEvent(
+            .turnYielded(sessionId: "yield-sid", reason: "human"),
+            join: .none
+        )
+
+        XCTAssertNil(store.liveTurn(for: destination), "empty Auto shell must settle without join keys")
+        XCTAssertTrue(store.humanYieldedDestinationIDs.contains(destination.id))
+    }
+
+    func testHumanYieldClearsSoftReconnectCatchingUpChrome() {
+        let store = MessagingStore()
+        let destination = MessagingDestination(conversationID: "mora-1", profileID: nil)
+        store.startLiveTurn(for: destination, profileID: nil)
+        store.handleStreamDisconnected(reason: .foregroundTransport)
+        XCTAssertEqual(store.liveTurn(for: destination)?.lifecycleOverlay, .resumeSync)
+
+        store.handleUnboundStreamEvent(
+            .turnYielded(sessionId: "yield-sid", reason: "human"),
+            join: .none
+        )
+
+        XCTAssertNil(store.liveTurn(for: destination))
+        XCTAssertTrue(store.humanYieldedDestinationIDs.contains(destination.id))
+    }
+
     func testSendReceiptBindsSessionBeforeFirstToken() {
         let store = MessagingStore()
         let destination = MessagingDestination(conversationID: "c1", profileID: "swe-id")
