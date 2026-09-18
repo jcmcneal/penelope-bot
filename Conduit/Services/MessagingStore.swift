@@ -596,8 +596,22 @@ extension MessagingStore: MessagingStreamRouting {
     func handleUnboundStreamEvent(_ event: StreamEvent, join: StreamJoinKey = .none) {
         guard !liveTurns.isEmpty else { return }
         if case .unparsed = event { return }
-        guard let key = routeKey(for: event, join: join) else { return }
-        apply(event, join: join, to: key)
+        if let key = routeKey(for: event, join: join) {
+            apply(event, join: join, to: key)
+            return
+        }
+        // Empty Auto shells never get an admit/session, so turn.yielded can
+        // arrive with no join keys that match routeKey. Still settle them —
+        // otherwise Catching up sticks forever after a WS flap.
+        if case .turnYielded(_, let reason) = event, reason == "human" {
+            let keys = liveTurns.compactMap { key, turn -> String? in
+                guard turn.phase.isActive, turn.sessionIDs.isEmpty else { return nil }
+                return key
+            }
+            for key in keys {
+                apply(event, join: join, to: key)
+            }
+        }
     }
 
     func handleStreamDisconnected(reason: MessagingTransportInterruptReason) {
@@ -693,7 +707,23 @@ extension MessagingStore: MessagingStreamRouting {
            let key = liveTurns.first(where: { !$0.value.sessionIDs.isDisjoint(with: incoming) })?.key {
             return key
         }
+        // Terminal settle for the lone in-flight shell (Auto empty To).
+        if Self.isTerminalSettleEvent(event) {
+            let active = liveTurns.filter { $0.value.phase.isActive }
+            if active.count == 1, let only = active.first {
+                return only.key
+            }
+        }
         return nil
+    }
+
+    private static func isTerminalSettleEvent(_ event: StreamEvent) -> Bool {
+        switch event {
+        case .turnYielded, .messageComplete:
+            return true
+        default:
+            return false
+        }
     }
 
     private func apply(_ event: StreamEvent, join: StreamJoinKey, to key: String) {
