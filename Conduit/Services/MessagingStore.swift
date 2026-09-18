@@ -528,6 +528,11 @@ final class MessagingStore: ObservableObject {
                       MessagingTurnHistory.completedAssistant(in: history.messages) == nil {
                 turn.markTurnLost()
             }
+            // COMPLETE + durable reply: never keep Catching up over a settled bubble.
+            if turn.settledTextInHistory {
+                turn.lifecycleOverlay = nil
+                turn.resumeSyncLossDue = false
+            }
         }
         if shouldDrop(turn, activeRuns: activeRuns) {
             cancelResumeSync(for: destination.id)

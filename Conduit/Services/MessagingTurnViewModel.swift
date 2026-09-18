@@ -79,6 +79,13 @@ final class MessagingTurnViewModel: ObservableObject {
         data = snapshot
         cache[key] = snapshot
         queryKey = key
+        // COMPLETE turns never emit turn.yielded. Durable assistant after the
+        // latest user message is enough to clear loading chrome.
+        if isLoading,
+           let history,
+           MessagingTurnHistory.completedAssistant(in: history.messages) != nil {
+            settleMutation()
+        }
         evaluateTerminal(liveTurn: liveTurn)
     }
 
@@ -103,7 +110,16 @@ final class MessagingTurnViewModel: ObservableObject {
             return
         }
 
-        guard let turn = liveTurn, turn.clientTurnID == expected else { return }
+        guard let turn = liveTurn else { return }
+
+        // History-settled COMPLETE must clear even if the shell was rebound
+        // without the original clientTurnID (admit/session race).
+        if turn.settledTextInHistory && turn.tools.isEmpty && !turn.showsTurnLostChrome {
+            settleMutation()
+            return
+        }
+
+        guard turn.clientTurnID == expected else { return }
 
         if turn.phase == .failed {
             settleMutation(error: turn.errorMessage)
@@ -112,9 +128,6 @@ final class MessagingTurnViewModel: ObservableObject {
         if turn.phase == .yielded {
             settleMutation()
             return
-        }
-        if turn.settledTextInHistory && turn.tools.isEmpty && !turn.showsTurnLostChrome {
-            settleMutation()
         }
     }
 

@@ -76,4 +76,69 @@ final class MessagingTurnViewModelTests: XCTestCase {
         model.settleIfStillLoading()
         XCTAssertFalse(model.isLoading)
     }
+
+    func testHistoryAssistantSettlesEvenWhenLiveTurnClientIDMismatches() {
+        let model = MessagingTurnViewModel(conversationID: "dm-1")
+        model.beginMutation(clientTurnID: "turn-send", conversationID: "dm-1")
+        var turn = MessagingLiveTurn(destinationID: "dm:swe-id", clientTurnID: "rebound-other", profileID: "swe-id")
+        turn.settledTextInHistory = true
+        turn.lifecycleOverlay = .reconnecting
+        let history = MessagingHistory(
+            conversation: MessagingConversation(
+                id: "dm-1",
+                kind: "dm",
+                title: "SWE",
+                profiles: ["swe-id"],
+                defaultResponder: "swe-id",
+                revision: 1,
+                preview: "",
+                updatedAt: 2,
+                unread: 0,
+                archived: false,
+                pinned: false,
+                muted: false
+            ),
+            messages: [
+                MessagingMessage(id: "u1", sequence: 1, author: "user", body: "How are you?", createdAt: 1),
+                MessagingMessage(id: "a1", sequence: 2, author: "swe-id", body: "Doing well", createdAt: 2),
+            ],
+            runs: [],
+            before: nil
+        )
+
+        model.sync(history: history, liveTurn: turn, recipientHint: false, conversationID: "dm-1")
+
+        XCTAssertFalse(model.isLoading, "COMPLETE history must settle without matching clientTurnID")
+    }
+
+    func testHistoryAssistantSettlesWithoutLiveTurn() {
+        let model = MessagingTurnViewModel(conversationID: "group-1")
+        model.beginMutation(clientTurnID: "turn-send", conversationID: "group-1")
+        let history = MessagingHistory(
+            conversation: MessagingConversation(
+                id: "group-1",
+                kind: "group",
+                title: "Mora",
+                profiles: ["pm"],
+                defaultResponder: "pm",
+                revision: 1,
+                preview: "",
+                updatedAt: 2,
+                unread: 0,
+                archived: false,
+                pinned: false,
+                muted: false
+            ),
+            messages: [
+                MessagingMessage(id: "u1", sequence: 1, author: "user", body: "Hello there", createdAt: 1),
+                MessagingMessage(id: "a1", sequence: 2, author: "pm", body: "Ready", createdAt: 2),
+            ],
+            runs: [],
+            before: nil
+        )
+
+        model.sync(history: history, liveTurn: nil, recipientHint: false, conversationID: "group-1")
+        XCTAssertFalse(model.isLoading)
+    }
+
 }
