@@ -152,10 +152,10 @@ class PlanningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(make_repo(Path(tmp), tiny, []))
             _d, plan = plan_from_tree(root, {n: 5.0 for n in tiny})
-            self.assertLessEqual(plan["lane_count"], 3)  # never more lanes than classes
+            self.assertEqual(plan["lane_count"], 1)
             root2 = Path(make_repo(Path(tmp) / "huge", huge, []))
             _d2, plan2 = plan_from_tree(root2, {n: 100.0 for n in huge})
-            self.assertEqual(plan2["lane_count"], 8)  # saturates at max_lanes
+            self.assertEqual(plan2["lane_count"], 1)
 
     def test_no_empty_lanes_generated(self):
         names = ["E{0}Tests".format(i) for i in range(9)]
@@ -246,9 +246,9 @@ class PlanningTests(unittest.TestCase):
         cfg = default_cfg()
         self.assertEqual(planner.lane_count_for(0.0, 0, cfg), 0)     # no classes
         self.assertEqual(planner.lane_count_for(20.0, 1, cfg), 1)    # 1 class
-        self.assertEqual(planner.lane_count_for(60.0, 3, cfg), 3)    # fewer than min
-        self.assertEqual(planner.lane_count_for(2000.0, 9, cfg), 8)  # saturates at max
-        self.assertEqual(planner.lane_count_for(961.0, 9, cfg), 5)   # ceil(961/240)=5
+        self.assertEqual(planner.lane_count_for(60.0, 3, cfg), 1)    # single lane
+        self.assertEqual(planner.lane_count_for(2000.0, 9, cfg), 1)  # single lane
+        self.assertEqual(planner.lane_count_for(961.0, 9, cfg), 1)   # single lane
 
     def test_history_wins_over_baseline(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -423,6 +423,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(uimat1.read_bytes(), uimat2.read_bytes())
             matrix = json.loads(mat1.read_text(encoding="utf-8"))
             self.assertIn("include", matrix)
+            self.assertEqual(len(matrix["include"]), 1)
             for entry in matrix["include"]:
                 self.assertIn("lane", entry)
                 self.assertIn("classes", entry)

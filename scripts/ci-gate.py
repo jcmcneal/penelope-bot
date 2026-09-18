@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """CI Gate: the single stable branch-protection verdict for Hermes Conduit.
 
-The unit-test matrix is dynamically sized (4-8 lanes), so individual lane
-jobs must never be required directly. This job aggregates the upstream
+Unit tests run as a single job (no lane matrix), so individual lane jobs
+must never be required directly. This job aggregates the upstream
 results into one stable status context ("CI Gate").
 
 Policy:

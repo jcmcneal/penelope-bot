@@ -44,8 +44,8 @@ SCHEMA_VERSION = 1
 
 # Planning configuration (overridable via flags for tests).
 DEFAULT_ESTIMATE_S = 20.0          # unseen/new classes: conservative, not sticky
-MIN_LANES = 4
-MAX_LANES = 8
+MIN_LANES = 1
+MAX_LANES = 1
 TARGET_LANE_BUDGET_S = 240.0       # scale-out threshold per lane
 LANE_TIMEOUT_MIN_S = 600           # healthy lanes never get less than 10 min
 LANE_TIMEOUT_MULTIPLIER = 2.5      # headroom over prediction

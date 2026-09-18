@@ -46,8 +46,8 @@ def make_repo(root, unit_classes=(), ui_classes=(), extra_files=None):
 def default_cfg(**overrides):
     cfg = {
         "default_estimate_s": 20.0,
-        "min_lanes": 4,
-        "max_lanes": 8,
+        "min_lanes": 1,
+        "max_lanes": 1,
         "target_budget_s": 240.0,
         "lane_timeout_min_s": 600,
         "timeout_multiplier": 2.5,

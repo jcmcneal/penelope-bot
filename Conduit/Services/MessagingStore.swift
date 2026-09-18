@@ -13,6 +13,8 @@ final class MessagingStore: ObservableObject {
     @Published private(set) var pinnedBotIDs: [String] = []
     @Published private(set) var cachedDisplayProfiles: [MessagingProfile] = []
     @Published private(set) var liveTurns: [String: MessagingLiveTurn] = [:]
+    /// Bumped whenever a live turn overlay is applied, settled, or dropped.
+    @Published private(set) var liveTurnProjectionEpoch = 0
     /// Destinations that just received `turn.yielded` with `reason=human`.
     @Published private(set) var humanYieldedDestinationIDs: Set<String> = []
     private(set) var service: MessagingService?
@@ -454,6 +456,7 @@ final class MessagingStore: ObservableObject {
             profileID: profileID,
             conversationID: destination.conversationID
         )
+        bumpLiveTurnProjection()
     }
 
     /// Bind join keys from the send ack so early WS tokens route into the shell
@@ -468,6 +471,7 @@ final class MessagingStore: ObservableObject {
                 if let sessionID = run.sessionID { turn.bindSession(sessionID) }
             }
             liveTurns[destination.id] = turn
+            bumpLiveTurnProjection()
             return
         }
         guard !admitted.isEmpty else { return }
@@ -482,6 +486,7 @@ final class MessagingStore: ObservableObject {
             if let sessionID = run.sessionID { turn.bindSession(sessionID) }
         }
         liveTurns[destination.id] = turn
+        bumpLiveTurnProjection()
     }
 
     func markLiveTurnFailed(for destination: MessagingDestination, message: String) {
@@ -489,6 +494,7 @@ final class MessagingStore: ObservableObject {
         turn.errorMessage = message
         turn.phase = .failed
         liveTurns[destination.id] = turn
+        bumpLiveTurnProjection()
     }
 
     func syncLiveTurn(for destination: MessagingDestination, history: MessagingHistory?) {
@@ -506,6 +512,7 @@ final class MessagingStore: ObservableObject {
                 turn.bindProfile(run.profile)
             }
             liveTurns[destination.id] = turn
+            bumpLiveTurnProjection()
             return
         }
         for run in activeRuns {
@@ -525,14 +532,17 @@ final class MessagingStore: ObservableObject {
         if shouldDrop(turn, activeRuns: activeRuns) {
             cancelResumeSync(for: destination.id)
             liveTurns[destination.id] = nil
+            bumpLiveTurnProjection()
             return
         }
         liveTurns[destination.id] = turn
+        bumpLiveTurnProjection()
     }
 
     func retryLostTurn(for destination: MessagingDestination) {
         cancelResumeSync(for: destination.id)
         liveTurns[destination.id] = nil
+        bumpLiveTurnProjection()
     }
 
     private func shouldDrop(_ turn: MessagingLiveTurn, activeRuns: [MessagingRun]) -> Bool {
@@ -548,6 +558,7 @@ final class MessagingStore: ObservableObject {
 
     func clearLiveTurn(for destination: MessagingDestination) {
         liveTurns[destination.id] = nil
+        bumpLiveTurnProjection()
     }
 
     func consumeHumanYieldNotice(for destination: MessagingDestination) {
@@ -693,11 +704,13 @@ extension MessagingStore: MessagingStreamRouting {
             cancelResumeSync(for: key)
             humanYieldedDestinationIDs.insert(key)
             liveTurns[key] = nil
+            bumpLiveTurnProjection()
             return
         }
         if turn.settledTextInHistory && turn.tools.isEmpty && !turn.showsTurnLostChrome {
             cancelResumeSync(for: key)
             liveTurns[key] = nil
+            bumpLiveTurnProjection()
             return
         }
         if turn.lifecycleOverlay == .resumeSync || turn.lifecycleOverlay == .reconnecting
@@ -705,5 +718,10 @@ extension MessagingStore: MessagingStreamRouting {
             noteProofOfLife(for: key, turn: &turn)
         }
         liveTurns[key] = turn
+        bumpLiveTurnProjection()
+    }
+
+    private func bumpLiveTurnProjection() {
+        liveTurnProjectionEpoch += 1
     }
 }
